@@ -79,16 +79,45 @@ def doctor(config: cfg.Config) -> None:
         print("Telegram: not configured")
 
 
+def console_approver(engine):
+    """Approval requests from the terminal chat are answered in the terminal."""
+    def ask(pending):
+        if pending.source != "terminal":
+            return
+        print(f"\n  🔐 Approval needed: {pending.action.summary}")
+        for key, value in pending.action.params.items():
+            print(f"     {key}: {value}")
+        if pending.classes:
+            print(f"     ⚠️ always asks: {', '.join(pending.classes)}")
+        if pending.tainted:
+            print(f"     ⚠️ after reading: {', '.join(pending.tainted)}")
+        choices = "[y] once  [r] remember  [n] no" if pending.can_remember else "[y] once  [n] no"
+        answer = input(f"     {choices}: ").strip().lower()
+        engine.answer(pending.id, answer in ("y", "yes", "e", "evet", "r"), answer == "r", by="terminal")
+    return ask
+
+
 def run(config: cfg.Config, mode: str) -> None:
     """Terminal chat and/or the Telegram bot, without the panel."""
+    from pocketagent.jobs import JobQueue
     from pocketagent.telegram_bot import TelegramBot
 
     runtime = Runtime(config)
     stop = threading.Event()
     bot = None
+    runtime.approvals.notifiers.append(console_approver(runtime.approvals))
+
+    def emergency_stop(by):
+        summary = runtime.approvals.stop_everything(by)
+        config.computer_use = False
+        cfg.save(config)
+        return summary
     if mode in ("all", "telegram") and config.telegram_ready:
         bot = TelegramBot(config.telegram.token, config.telegram.owner_chat_id, runtime.agent,
-                          runtime.registry, runtime.conversations)
+                          runtime.registry, runtime.conversations, jobs=JobQueue(),
+                          approvals=runtime.approvals, on_stop=emergency_stop, language=lambda: config.language)
+        runtime.approvals.notifiers.append(bot.ask_approval)
+        runtime.approvals.resolved.append(bot.approval_resolved)
         threading.Thread(target=bot.run_forever, args=(stop,), daemon=True).start()
         print("Telegram bot is running: message your bot from any device.")
     elif mode == "telegram":
