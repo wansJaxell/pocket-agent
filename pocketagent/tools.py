@@ -146,11 +146,8 @@ class ToolRegistry:
 
     def describe_for_prompt(self) -> str:
         """Text description of the tools, for models without native tool calling."""
-        lines = []
-        for t in self.tools.values():
-            args = ", ".join(f"{name}: {p['type']}" for name, p in t.parameters["properties"].items())
-            lines.append(f"- {t.name}({args}): {t.description}")
-        return "\n".join(lines)
+        from pocketagent.llm import describe_tools
+        return describe_tools(self.schemas())
 
     # ---------- running ----------
     def call(self, name: str, arguments: dict, ctx: ToolContext) -> str:

@@ -85,11 +85,11 @@ def test_full_setup_with_local_ollama_and_telegram():
 
 def test_cloud_provider_and_text_tool_fallback():
     http = FakeHttp(ollama_running=False)
-    # options: 1 nvidia, 2 openrouter, 3 groq, 4 custom -> NVIDIA, paste key, accept suggested model, skip Telegram
+    # options: 1 nvidia, 2 openrouter, 3 groq, ... -> NVIDIA, paste key, accept suggested model, skip Telegram
     io = ScriptedIO("1", "nvapi-test", "", "n")
     config = run_setup(Config(), io=io, http=http, brain_factory=brain_without_tools)
     assert config.brain.base_url == "https://integrate.api.nvidia.com/v1"
-    assert config.brain.api_key == "nvapi-test"
+    assert config.keys["nvidia"] == "nvapi-test" and cfg.load().keys["nvidia"] == "nvapi-test"
     assert config.brain.model == "nvidia/nemotron-3-super-120b-a12b"
     assert config.brain.native_tools is False
     assert "install Ollama" in io.text

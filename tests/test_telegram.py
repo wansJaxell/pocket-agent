@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 from conftest import call, say
 
+from pocketagent.llm import Reply
 from pocketagent.telegram_bot import TelegramBot, split_message
 
 OWNER, STRANGER = 111, 999
@@ -79,3 +80,10 @@ def test_long_answers_are_split():
     parts = split_message(text)
     assert len(parts) == 3 and all(len(p) <= 4000 for p in parts)
     assert "".join(parts).replace("\n", "") == text.replace("\n", "")
+
+
+def test_answer_says_which_brain_was_used(make_runtime):
+    bot, http, _ = make_bot(make_runtime, Reply(content="Selam!", brain="Groq · llama",
+                                                skipped=["OpenRouter · x:free: HTTP 429"]))
+    bot.handle(message(OWNER, "selam"))
+    assert http.messages_to(OWNER) == ["Selam!\n\n🧠 Groq · llama (↪ OpenRouter · x:free: HTTP 429)"]

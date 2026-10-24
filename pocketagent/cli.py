@@ -1,9 +1,9 @@
 """Command line: `pocketagent` (or double-click PocketAgent.exe).
 
-    pocketagent            first run: setup; afterwards: Telegram bot + terminal chat
-    pocketagent setup      run the setup wizard again
+    pocketagent            opens the panel in your browser; runs Telegram and reminders in the background
+    pocketagent setup      terminal setup (for computers without a browser)
     pocketagent chat       chat in this terminal only
-    pocketagent telegram   run only the Telegram bot
+    pocketagent telegram   run only the Telegram bot (no panel)
     pocketagent skills     list loaded skills and tools
     pocketagent doctor     check the brain and Telegram connections
 """
@@ -12,42 +12,19 @@ import argparse
 import sys
 import threading
 import time
+import webbrowser
+
+import requests
 
 from pocketagent import __version__
 from pocketagent import config as cfg
-from pocketagent.agent import Agent
-from pocketagent.llm import Brain
-from pocketagent.memory import ConversationStore, NoteStore, ReminderStore
-from pocketagent.tools import ToolRegistry
+from pocketagent.app import App, Runtime, start_reminder_loop
 
-
-class Runtime:
-    """Everything the agent needs, built from the saved config."""
-
-    def __init__(self, config: cfg.Config, brain=None):
-        self.config = config
-        self.registry = ToolRegistry()
-        self.registry.load_builtin()
-        self.registry.load_folder(cfg.user_skills_dir())
-        memory = cfg.memory_dir()
-        self.conversations = ConversationStore(memory, keep=config.history_messages)
-        self.notes = NoteStore(memory)
-        self.reminders = ReminderStore(memory)
-        self.agent = Agent(config, brain or Brain(config.brain), self.registry, self.conversations,
-                           self.notes, self.reminders, cfg.workspace_dir())
-
-
-def start_reminder_loop(runtime: Runtime, notify, stop: threading.Event) -> None:
-    def loop():
-        while not stop.is_set():
-            for item in runtime.reminders.pop_due():
-                notify(item["chat_id"], f"⏰ Reminder: {item['text']}")
-            stop.wait(15)
-    threading.Thread(target=loop, daemon=True).start()
+__all__ = ["main", "Runtime", "start_reminder_loop"]
 
 
 def terminal_chat(runtime: Runtime, stop: threading.Event) -> None:
-    print(f"\n{runtime.config.agent_name} · model {runtime.config.brain.model} · "
+    print(f"\n{runtime.config.agent_name} · {len(runtime.config.brains())} brain(s) · "
           f"{len(runtime.registry.tools)} tools")
     print("Type your message. Commands: /skills  /reset  /exit\n")
     while not stop.is_set():
@@ -67,11 +44,12 @@ def terminal_chat(runtime: Runtime, stop: threading.Event) -> None:
             list_skills(runtime)
             continue
         try:
-            answer = runtime.agent.ask("terminal", text, on_tool=lambda name, args, result:
+            answer = runtime.agent.run("terminal", text, on_tool=lambda name, args, result:
                                        print(f"  🔧 {name}({', '.join(f'{k}={v!r}' for k, v in args.items())})"))
+            reply = answer.text + (f"\n  🧠 {answer.brain}" if answer.brain else "")
         except Exception as error:
-            answer = f"⚠️ Could not reach the brain: {type(error).__name__}: {error}"
-        print(f"\n{runtime.config.agent_name}: {answer}\n")
+            reply = f"⚠️ Could not reach the brain: {type(error).__name__}: {error}"
+        print(f"\n{runtime.config.agent_name}: {reply}\n")
 
 
 def list_skills(runtime: Runtime) -> None:
@@ -88,10 +66,10 @@ def list_skills(runtime: Runtime) -> None:
 
 
 def doctor(config: cfg.Config) -> None:
-    import requests
-    from pocketagent.setup_wizard import TELEGRAM_API, test_brain, ConsoleIO
+    from pocketagent.setup_wizard import TELEGRAM_API, ConsoleIO, test_brain
     print(f"Config: {cfg.config_path()}")
-    print(f"Brain: {config.brain.provider} · {config.brain.model} · {config.brain.base_url}")
+    for number, brain in enumerate(config.brains(), 1):
+        print(f"Brain {number}: {brain.provider} · {brain.model} · {brain.base_url}")
     test_brain(config, ConsoleIO())
     if config.telegram.token:
         me = requests.get(TELEGRAM_API.format(token=config.telegram.token, method="getMe"), timeout=15).json()
@@ -101,6 +79,7 @@ def doctor(config: cfg.Config) -> None:
 
 
 def run(config: cfg.Config, mode: str) -> None:
+    """Terminal chat and/or the Telegram bot, without the panel."""
     from pocketagent.telegram_bot import TelegramBot
 
     runtime = Runtime(config)
@@ -133,6 +112,45 @@ def run(config: cfg.Config, mode: str) -> None:
         stop.set()
 
 
+def already_running(port: int) -> bool:
+    """Is a PocketAgent panel already answering on this port?"""
+    session = requests.Session()
+    session.trust_env = False                      # never ask a proxy about 127.0.0.1
+    try:
+        return session.get(f"http://127.0.0.1:{port}/api/ping", timeout=2).json().get("app") == "PocketAgent"
+    except Exception:
+        return False
+
+
+def serve(config: cfg.Config, open_browser: bool = True, port: int | None = None) -> None:
+    """Start the panel (only on 127.0.0.1), Telegram and reminders; open the panel in the browser."""
+    from pocketagent.panel import PanelServer
+
+    port = port or config.panel_port
+    if already_running(port):
+        print(f"PocketAgent is already running: http://127.0.0.1:{port}/")
+        if open_browser:
+            webbrowser.open(f"http://127.0.0.1:{port}/")
+        return
+    app = App(config)
+    try:
+        server = PanelServer(app, port=port)
+    except OSError:
+        server = PanelServer(app, port=0)              # the usual port is taken by another program
+    server.start()
+    server.app.start_services()
+    print(f"PocketAgent {__version__} panel: {server.url}  (only this computer can open it)")
+    print("Keep this window open while you use the agent. Press Ctrl+C to stop.")
+    if open_browser:
+        webbrowser.open(server.url)
+    try:
+        while True:
+            time.sleep(1)
+    finally:
+        server.app.stop_services()
+        server.stop()
+
+
 def main(argv=None) -> None:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(errors="replace")   # old Windows consoles cannot print every emoji
@@ -140,21 +158,25 @@ def main(argv=None) -> None:
     parser.add_argument("--version", action="version", version=f"PocketAgent {__version__}")
     parser.add_argument("command", nargs="?", default="start",
                         choices=["start", "setup", "chat", "telegram", "skills", "doctor"])
+    parser.add_argument("--no-browser", action="store_true", help="do not open the panel in the browser")
+    parser.add_argument("--port", type=int, default=None, help="panel port (default 8765)")
     args = parser.parse_args(argv)
 
     try:
         config = cfg.load()
-        if args.command == "setup" or (args.command in ("start", "chat", "telegram") and not config.brain_ready):
+        if args.command == "setup" or (args.command in ("chat", "telegram") and not config.brain_ready):
             from pocketagent.setup_wizard import run_setup
             config = run_setup(config)
             if not config.brain_ready or args.command == "setup":
                 return
-        if args.command == "skills":
+        if args.command == "start":
+            serve(config, open_browser=not args.no_browser, port=args.port)
+        elif args.command == "skills":
             list_skills(Runtime(config))
         elif args.command == "doctor":
             doctor(config)
         else:
-            run(config, {"start": "all", "chat": "chat", "telegram": "telegram"}[args.command])
+            run(config, {"chat": "chat", "telegram": "telegram"}[args.command])
     except KeyboardInterrupt:
         print("\nBye!")
     except Exception as error:

@@ -3,8 +3,9 @@ from types import SimpleNamespace
 import pytest
 import requests
 
-from pocketagent.config import BrainConfig
-from pocketagent.llm import Brain, BrainError, parse_arguments, strip_thinking
+from pocketagent.config import BrainConfig, Config
+from pocketagent.llm import (PROVIDERS, Brain, BrainError, Router, list_models, parse_arguments,
+                             strip_thinking)
 
 
 class FakeServer:
@@ -78,3 +79,122 @@ def test_broken_tool_arguments_become_empty_dict():
 
 def test_strip_thinking():
     assert strip_thinking("<think>\nhmm\n</think>\n\nAnswer") == "Answer"
+
+
+CALCULATE = {"type": "function", "function": {
+    "name": "calculate", "description": "Do exact math.",
+    "parameters": {"type": "object", "properties": {"expression": {"type": "string"}}, "required": ["expression"]}}}
+
+
+def test_text_mode_describes_the_tools_in_the_system_message():
+    server = FakeServer(ok({"content": "hi"}))
+    brain(server, native_tools=False).chat(
+        [{"role": "system", "content": "You are Robi."}, {"role": "user", "content": "6*7?"}], [CALCULATE])
+    sent = server.requests[0]["json"]
+    assert sent["messages"][0]["content"].startswith("You are Robi.")
+    assert "calculate(expression: string): Do exact math." in sent["messages"][0]["content"]
+    assert '{"tool": "<tool name>"' in sent["messages"][0]["content"]
+    assert "tools" not in sent
+
+
+def test_http_errors_carry_the_status_code():
+    with pytest.raises(BrainError) as error:
+        brain(FakeServer(status(402, "no credit"))).chat([])
+    assert error.value.status == 402
+
+
+# ---------- the brain chain (fallbacks) ----------
+def chain(*brains, keys=None):
+    config = Config()
+    config.set_brains(list(brains))
+    config.keys = keys or {}
+    return config
+
+
+def router(config, server):
+    return Router(config, http=server, retry_delay=0)
+
+
+def test_rate_limited_brain_hands_over_to_the_next_free_one():
+    config = chain(BrainConfig("groq", "https://groq.test/v1", "llama"),
+                   BrainConfig("openrouter", "https://or.test/v1", "paid/model", free=False),
+                   BrainConfig("gemini", "https://gemini.test/v1", "gemini-2.5-flash"),
+                   keys={"groq": "g-key", "openrouter": "o-key", "gemini": "m-key"})
+    server = FakeServer(status(429), ok({"content": "from gemini"}))
+    reply = router(config, server).chat([{"role": "user", "content": "hi"}])
+    assert reply.content == "from gemini"
+    assert reply.brain == "Gemini · gemini-2.5-flash"
+    assert reply.skipped == ["Groq · llama: HTTP 429"]
+    # 429 is not retried when a fallback exists, and the paid model is never used as a fallback
+    assert [r["url"] for r in server.requests] == ["https://groq.test/v1/chat/completions",
+                                                   "https://gemini.test/v1/chat/completions"]
+    assert server.requests[1]["headers"]["Authorization"] == "Bearer m-key"
+
+
+@pytest.mark.parametrize("code", [402, 403])
+def test_out_of_credit_or_forbidden_also_hands_over(code):
+    config = chain(BrainConfig("openrouter", "https://or.test/v1", "a:free"), BrainConfig("groq", "https://g.test/v1", "b"))
+    reply = router(config, FakeServer(status(code), ok({"content": "ok"}))).chat([])
+    assert reply.brain == "Groq · b" and reply.skipped == [f"OpenRouter · a:free: HTTP {code}"]
+
+
+def test_other_errors_are_not_hidden_by_the_fallback():
+    config = chain(BrainConfig("groq", "https://g.test/v1", "a"), BrainConfig("gemini", "https://m.test/v1", "b"))
+    server = FakeServer(status(401, "invalid api key"))
+    with pytest.raises(BrainError, match="HTTP 401"):
+        router(config, server).chat([])
+    assert len(server.requests) == 1
+
+
+def test_the_last_brain_still_retries_when_busy():
+    config = chain(BrainConfig("groq", "https://g.test/v1", "a"))
+    reply = router(config, FakeServer(status(429), ok({"content": "patience"}))).chat([])
+    assert reply.content == "patience" and reply.skipped == []
+
+
+def test_no_brain_yet_is_explained():
+    with pytest.raises(BrainError, match="panel"):
+        router(Config(), FakeServer()).chat([])
+
+
+# ---------- providers and model lists ----------
+def test_every_direct_key_provider_has_a_free_key_page():
+    for provider in ("groq", "gemini", "nvidia", "github", "cerebras"):
+        assert PROVIDERS[provider].needs_key and PROVIDERS[provider].key_url.startswith("https://")
+    assert PROVIDERS["openrouter"].oauth
+    assert PROVIDERS["gemini"].trains_on_data
+    assert PROVIDERS["custom"].base_url == ""
+
+
+class FakeModels:
+    def __init__(self, body, status_code=200):
+        self.body, self.status_code, self.calls = body, status_code, []
+
+    def get(self, url, headers, timeout):
+        self.calls.append((url, headers))
+        return SimpleNamespace(status_code=self.status_code, json=lambda: self.body, text=str(self.body))
+
+
+def test_openrouter_free_models_are_marked_and_listed_first():
+    body = {"data": [
+        {"id": "openai/gpt-5", "pricing": {"prompt": "0.000002", "completion": "0.00001"}},
+        {"id": "meta-llama/llama-3.3-70b-instruct:free", "pricing": {"prompt": "0", "completion": "0"}},
+        {"id": "openrouter/auto", "pricing": {"prompt": "-1", "completion": "-1"}}]}
+    models = list_models("openrouter", http=FakeModels(body))
+    assert models == [{"id": "meta-llama/llama-3.3-70b-instruct:free", "free": True},
+                      {"id": "openai/gpt-5", "free": False}, {"id": "openrouter/auto", "free": False}]
+
+
+def test_model_lists_from_gemini_and_the_github_catalog():
+    gemini = list_models("gemini", "m-key", http=FakeModels(
+        {"data": [{"id": "models/gemini-2.5-flash"}, {"id": "models/text-embedding-004"}]}))
+    assert gemini == [{"id": "gemini-2.5-flash", "free": True}]       # no prefix, no embedding models
+    github = FakeModels([{"id": "openai/gpt-4.1-mini"}])
+    assert list_models("github", "ghp-x", http=github) == [{"id": "openai/gpt-4.1-mini", "free": True}]
+    assert github.calls == [("https://models.github.ai/catalog/models", {"Authorization": "Bearer ghp-x"})]
+
+
+def test_rejected_key_while_listing_models():
+    with pytest.raises(BrainError) as error:
+        list_models("groq", "bad", http=FakeModels({"error": "invalid"}, status_code=401))
+    assert error.value.status == 401

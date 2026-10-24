@@ -1,19 +1,22 @@
 """The "brain": any OpenAI-compatible chat API.
 
 Local and free:   Ollama, LM Studio
-Free cloud tiers: NVIDIA build.nvidia.com (Nemotron), OpenRouter, Groq
+Free cloud tiers: OpenRouter, Groq, Google AI Studio (Gemini), NVIDIA, GitHub Models, Cerebras
 They all speak the same API, so one small client covers every option.
 Only `requests` is used (no heavy SDK), so the agent also installs on Android (Termux).
+
+The user can line up several brains in priority order (the Router): when one is out of free
+credit or rate-limited (HTTP 402/403/429), the next free one answers instead.
 """
 
 import json
 import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import requests
 
-from pocketagent.config import BrainConfig
+from pocketagent.config import BrainConfig, Config
 
 
 @dataclass(frozen=True)
@@ -21,28 +24,48 @@ class Provider:
     label: str
     base_url: str
     needs_key: bool
-    key_url: str = ""
+    key_url: str = ""             # where the "Get your free key" button goes
     suggested_model: str = ""
+    name: str = ""                # short name shown under each answer
+    models_url: str = ""          # the model list, when it is not at {base_url}/models
+    oauth: bool = False           # sign in from the browser instead of pasting a key
+    trains_on_data: bool = False  # the free tier may use your messages to train models
+    local: bool = False           # runs on this computer
 
 
 PROVIDERS: dict[str, Provider] = {
-    "ollama": Provider("Ollama (local, free)", "http://localhost:11434/v1", False,
-                       suggested_model="qwen3.5:9b"),
-    "lmstudio": Provider("LM Studio (local, free)", "http://localhost:1234/v1", False),
+    "openrouter": Provider("OpenRouter (free models, sign in from the browser)", "https://openrouter.ai/api/v1", True,
+                           key_url="https://openrouter.ai/keys", name="OpenRouter", oauth=True),
+    "groq": Provider("Groq (free tier, very fast)", "https://api.groq.com/openai/v1", True,
+                     key_url="https://console.groq.com/keys", suggested_model="llama-3.3-70b-versatile", name="Groq"),
+    "gemini": Provider("Google AI Studio: Gemini (free tier)", "https://generativelanguage.googleapis.com/v1beta/openai",
+                       True, key_url="https://aistudio.google.com/apikey", suggested_model="gemini-2.5-flash",
+                       name="Gemini", trains_on_data=True),
     "nvidia": Provider("NVIDIA build.nvidia.com (free tier)", "https://integrate.api.nvidia.com/v1", True,
-                       key_url="https://build.nvidia.com", suggested_model="nvidia/nemotron-3-super-120b-a12b"),
-    "openrouter": Provider("OpenRouter (has free models)", "https://openrouter.ai/api/v1", True,
-                           key_url="https://openrouter.ai/keys"),
-    "groq": Provider("Groq (free tier)", "https://api.groq.com/openai/v1", True,
-                     key_url="https://console.groq.com/keys"),
-    "custom": Provider("Other OpenAI-compatible API", "", True),
+                       key_url="https://build.nvidia.com", suggested_model="nvidia/nemotron-3-super-120b-a12b",
+                       name="NVIDIA"),
+    "github": Provider("GitHub Models (free with a GitHub account)", "https://models.github.ai/inference", True,
+                       key_url="https://github.com/settings/personal-access-tokens/new",
+                       suggested_model="openai/gpt-4.1-mini", name="GitHub Models",
+                       models_url="https://models.github.ai/catalog/models"),
+    "cerebras": Provider("Cerebras (free tier)", "https://api.cerebras.ai/v1", True,
+                         key_url="https://cloud.cerebras.ai", suggested_model="gpt-oss-120b", name="Cerebras"),
+    "ollama": Provider("Ollama (local, free)", "http://localhost:11434/v1", False,
+                       suggested_model="qwen3.5:9b", name="Ollama", local=True),
+    "lmstudio": Provider("LM Studio (local, free)", "http://localhost:1234/v1", False, name="LM Studio", local=True),
+    "custom": Provider("Other OpenAI-compatible API", "", True, name="Custom"),
 }
 
 RETRY_STATUS = {429, 500, 502, 503, 504}   # busy or temporarily broken: worth another try
+FAILOVER_STATUS = {402, 403, 429}          # out of credit, refused or rate-limited: let the next brain answer
 
 
 class BrainError(Exception):
     """The model server could not be reached or refused the request."""
+
+    def __init__(self, message: str, status: int | None = None):
+        super().__init__(message)
+        self.status = status
 
 
 @dataclass
@@ -56,6 +79,8 @@ class ToolCall:
 class Reply:
     content: str
     tool_calls: list[ToolCall] = field(default_factory=list)
+    brain: str = ""                                    # which brain answered, e.g. "Groq · llama-3.3-70b"
+    skipped: list[str] = field(default_factory=list)   # brains that refused first, e.g. "...: HTTP 429"
 
 
 _THINK = re.compile(r"<think>.*?</think>", re.DOTALL)
@@ -76,16 +101,60 @@ def parse_arguments(raw) -> dict:
         return {}
 
 
+TEXT_TOOLS = """
+
+You can use these tools:
+{tools}
+
+To use a tool, reply with ONLY this JSON and nothing else:
+{{"tool": "<tool name>", "arguments": {{<arguments>}}}}
+You will get the result back, then call another tool or write your final answer."""
+
+
+def describe_tools(schemas: list[dict]) -> str:
+    """Text description of the tools, for models without native tool calling."""
+    lines = []
+    for schema in schemas:
+        function = schema.get("function", {}) if isinstance(schema, dict) else {}
+        properties = function.get("parameters", {}).get("properties", {})
+        args = ", ".join(f"{name}: {p.get('type', 'string')}" for name, p in properties.items())
+        lines.append(f"- {function.get('name', '?')}({args}): {function.get('description', '')}")
+    return "\n".join(lines)
+
+
+def with_text_tools(messages: list[dict], tools: list[dict]) -> list[dict]:
+    """A copy of the messages whose system message also explains how to call the tools in plain text."""
+    text = TEXT_TOOLS.format(tools=describe_tools(tools))
+    messages = [dict(m) for m in messages]
+    if messages and messages[0].get("role") == "system":
+        messages[0]["content"] = (messages[0].get("content") or "") + text
+    else:
+        messages.insert(0, {"role": "system", "content": text.strip()})
+    return messages
+
+
+def brain_label(config: BrainConfig) -> str:
+    provider = PROVIDERS.get(config.provider)
+    return f"{provider.name if provider else config.provider or 'Brain'} · {config.model}"
+
+
 class Brain:
-    def __init__(self, config: BrainConfig, http=None, retries: int = 2, retry_delay: float = 2.0):
+    def __init__(self, config: BrainConfig, http=None, retries: int = 2, retry_delay: float = 2.0,
+                 retry_status=RETRY_STATUS):
         self.config = config
         self.http = http or requests.Session()
-        self.retries, self.retry_delay = retries, retry_delay
+        self.retries, self.retry_delay, self.retry_status = retries, retry_delay, set(retry_status)
+
+    @property
+    def label(self) -> str:
+        return brain_label(self.config)
 
     def chat(self, messages: list[dict], tools: list[dict] | None = None) -> Reply:
         body = {"model": self.config.model, "messages": messages, "temperature": 0.3}
         if tools and self.config.native_tools:
             body["tools"] = tools
+        elif tools:
+            body["messages"] = with_text_tools(messages, tools)
         headers = {"Content-Type": "application/json"}
         if self.config.api_key:
             headers["Authorization"] = f"Bearer {self.config.api_key}"
@@ -101,14 +170,103 @@ class Brain:
                                      "Is the model server (e.g. Ollama) running?") from error
                 time.sleep(self.retry_delay * (attempt + 1))
                 continue
-            if response.status_code in RETRY_STATUS and not last_try:
+            if response.status_code in self.retry_status and not last_try:
                 time.sleep(self.retry_delay * (attempt + 1))
                 continue
             if response.status_code >= 400:
-                raise BrainError(f"the model server answered HTTP {response.status_code}: {response.text[:300]}")
+                raise BrainError(f"the model server answered HTTP {response.status_code}: {response.text[:300]}",
+                                 status=response.status_code)
             message = response.json()["choices"][0]["message"]
             calls = [ToolCall(id=c.get("id") or f"call_{i}", name=c["function"]["name"],
                               arguments=parse_arguments(c["function"].get("arguments")))
                      for i, c in enumerate(message.get("tool_calls") or [])]
-            return Reply(content=message.get("content") or "", tool_calls=calls)
+            return Reply(content=message.get("content") or "", tool_calls=calls, brain=self.label)
         raise BrainError("no answer from the model server")   # not reached; keeps type checkers happy
+
+
+class Router:
+    """The user's brains in priority order. The first one answers; on HTTP 402/403/429 the next
+    *free* brain in the list takes over. The reply says which brain answered and which refused."""
+
+    def __init__(self, config: Config, http=None, retry_delay: float = 2.0):
+        self.config = config        # read on every call, so changes made in the panel apply at once
+        self.http = http or requests.Session()
+        self.retry_delay = retry_delay
+
+    def candidates(self) -> list[BrainConfig]:
+        chain = self.config.chain()
+        return chain[:1] + [b for b in chain[1:] if b.free]
+
+    def chat(self, messages: list[dict], tools: list[dict] | None = None) -> Reply:
+        candidates = self.candidates()
+        if not candidates:
+            raise BrainError("no brain is connected yet: open the panel and connect one")
+        skipped = []
+        for number, config in enumerate(candidates, 1):
+            last = number == len(candidates)
+            # with a fallback waiting, a rate limit is not worth waiting for
+            brain = Brain(config, http=self.http, retry_delay=self.retry_delay,
+                          retry_status=RETRY_STATUS if last else RETRY_STATUS - FAILOVER_STATUS)
+            try:
+                reply = brain.chat(messages, tools)
+            except BrainError as error:
+                if last or error.status not in FAILOVER_STATUS:
+                    raise
+                skipped.append(f"{brain.label}: HTTP {error.status}")
+                continue
+            return replace(reply, brain=brain.label, skipped=skipped)
+        raise BrainError("no brain answered")   # not reached
+
+
+TIME_TOOL = {"type": "function", "function": {
+    "name": "get_current_time", "description": "Get the current date and time.",
+    "parameters": {"type": "object", "properties": {}, "required": []}}}
+
+
+def probe(config: BrainConfig, brain_factory=Brain) -> tuple[str, bool]:
+    """Check a brain answers (raises BrainError if not), then whether it supports native tool calls."""
+    brain = brain_factory(replace(config, native_tools=True))
+    answer = brain.chat([{"role": "user", "content": "Reply with the single word OK."}]).content
+    try:
+        reply = brain.chat([{"role": "user", "content": "What time is it now? Use your tool."}], [TIME_TOOL])
+        native = bool(reply.tool_calls)
+    except Exception:
+        native = False
+    return strip_thinking(answer), native
+
+
+_NOT_CHAT = re.compile(r"embed|whisper|tts|rerank|moderation|guard|dall-e|image|audio|transcrib", re.IGNORECASE)
+
+
+def _is_free(model: dict) -> bool:
+    pricing = model.get("pricing") or {}
+    try:
+        zero = float(pricing.get("prompt", 1)) == 0 and float(pricing.get("completion", 1)) == 0
+    except (TypeError, ValueError):
+        zero = False
+    return zero or str(model.get("id", "")).endswith(":free")
+
+
+def list_models(provider: str, api_key: str = "", base_url: str = "", http=requests) -> list[dict]:
+    """The chat models a provider offers: [{"id": ..., "free": ...}], free ones first.
+
+    Only OpenRouter mixes free and paid models; the other providers are used on their free tier.
+    """
+    info = PROVIDERS[provider]
+    url = info.models_url or (base_url or info.base_url).rstrip("/") + "/models"
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    try:
+        response = http.get(url, headers=headers, timeout=20)
+    except OSError as error:            # requests' network errors are OSErrors too
+        raise BrainError(f"cannot reach {url}: {error}") from error
+    if response.status_code >= 400:
+        raise BrainError(f"{info.name or provider} answered HTTP {response.status_code}: {response.text[:200]}",
+                         status=response.status_code)
+    data = response.json()
+    items = data.get("data", []) if isinstance(data, dict) else data   # the GitHub catalog is a plain list
+    models = []
+    for item in items if isinstance(items, list) else []:
+        model_id = str(item.get("id") or item.get("name") or "").removeprefix("models/")
+        if model_id and not _NOT_CHAT.search(model_id):
+            models.append({"id": model_id, "free": _is_free(item) if provider == "openrouter" else True})
+    return sorted(models, key=lambda m: (not m["free"], m["id"].lower()))

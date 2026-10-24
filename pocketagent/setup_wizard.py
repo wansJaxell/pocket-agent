@@ -1,4 +1,6 @@
-"""First-run setup: finds a brain, tests it, and connects Telegram with as little typing as possible.
+"""Terminal setup (for computers without a browser; normally the web panel does this).
+
+Finds a brain, tests it, and connects Telegram with as little typing as possible.
 
 What is automatic:
   - finds Ollama / LM Studio running on this computer and lists their models
@@ -12,7 +14,7 @@ import time
 import requests
 
 from pocketagent.config import Config, save
-from pocketagent.llm import PROVIDERS, Brain
+from pocketagent.llm import PROVIDERS, Brain, probe
 
 TELEGRAM_API = "https://api.telegram.org/bot{token}/{method}"
 
@@ -48,27 +50,15 @@ def detect_local_models(http=requests) -> dict[str, list[str]]:
     return found
 
 
-TIME_TOOL = {"type": "function", "function": {
-    "name": "get_current_time", "description": "Get the current date and time.",
-    "parameters": {"type": "object", "properties": {}, "required": []}}}
-
-
 def test_brain(config: Config, io, brain_factory=Brain) -> bool:
     """Check the model answers, then check native tool calling (falls back to text tools)."""
     io.say("\nTesting the brain...")
     try:
-        brain = brain_factory(config.brain)
-        reply = brain.chat([{"role": "user", "content": "Reply with the single word OK."}])
-        io.say(f"  ✓ Model answered: {reply.content.strip()[:60]!r}")
+        answer, config.brain.native_tools = probe(config.with_key(config.brain), brain_factory)
+        io.say(f"  ✓ Model answered: {answer.strip()[:60]!r}")
     except Exception as error:
         io.say(f"  ✗ Could not reach the model: {type(error).__name__}: {error}")
         return False
-    try:
-        config.brain.native_tools = True
-        reply = brain.chat([{"role": "user", "content": "What time is it now? Use your tool."}], [TIME_TOOL])
-        config.brain.native_tools = bool(reply.tool_calls)
-    except Exception:
-        config.brain.native_tools = False
     io.say("  ✓ Native tool calling works." if config.brain.native_tools else
            "  • No native tool calling: tools will be described in the prompt instead (works, a bit less reliable).")
     return True
@@ -78,7 +68,8 @@ def choose_brain(config: Config, io, http=requests) -> None:
     io.say("\n=== Step 1/2: the brain (AI model) ===")
     local = detect_local_models(http)
     options = [(f"{PROVIDERS[p].label}: {model}", p, model) for p, models in local.items() for model in models]
-    options += [(PROVIDERS[p].label, p, None) for p in ("nvidia", "openrouter", "groq", "custom")]
+    options += [(PROVIDERS[p].label, p, None)
+                for p in ("nvidia", "openrouter", "groq", "gemini", "github", "cerebras", "custom")]
 
     if not local:
         io.say("No local model server found. For a free, private brain install Ollama from https://ollama.com,")
@@ -99,12 +90,13 @@ def choose_brain(config: Config, io, http=requests) -> None:
 
     config.brain.provider = provider_key
     config.brain.base_url = provider.base_url or io.ask("API base URL (ends with /v1)")
+    config.brain.api_key = ""
     if provider.needs_key:
         if provider.key_url:
             io.say(f"Get a free API key at {provider.key_url}")
-        config.brain.api_key = io.ask("Paste your API key")
-    else:
-        config.brain.api_key = ""
+        if provider.trains_on_data:
+            io.say("Note: on the free tier your messages may be used to train the provider's models.")
+        config.keys[provider_key] = io.ask("Paste your API key")
     config.brain.model = model or io.ask("Model name", provider.suggested_model)
 
 
@@ -154,7 +146,7 @@ def setup_telegram(config: Config, io, http=requests) -> None:
     if owner is None:
         io.say("  ✗ No message arrived. Run `pocketagent setup` again when you are ready.")
         return
-    config.telegram.token, config.telegram.owner_chat_id = token, owner
+    config.telegram.token, config.telegram.owner_chat_id, config.telegram.username = token, owner, username
     http.post(TELEGRAM_API.format(token=token, method="sendMessage"), timeout=15, json={
         "chat_id": owner, "text": f"✅ {config.agent_name} is connected. Only this chat can talk to me."})
     io.say("  ✓ Connected. Only your chat can use the agent.")

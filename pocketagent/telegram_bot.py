@@ -35,10 +35,22 @@ def split_message(text: str, limit: int = MESSAGE_LIMIT) -> list[str]:
     return [p.rstrip() for p in parts] or [""]
 
 
+def footer(answer) -> str:
+    """The lines under an answer: tools used and the brain that wrote it."""
+    lines = []
+    if answer.tools:
+        lines.append("🔧 " + ", ".join(dict.fromkeys(answer.tools)))
+    if answer.brain:
+        lines.append(f"🧠 {answer.brain}" + (f" (↪ {', '.join(answer.skipped)})" if answer.skipped else ""))
+    return ("\n\n" + "\n".join(lines)) if lines else ""
+
+
 class TelegramBot:
-    def __init__(self, token: str, owner_chat_id: int, agent, registry, conversations, http=requests):
+    def __init__(self, token: str, owner_chat_id: int, agent, registry, conversations, http=requests,
+                 jobs=None):
         self.token, self.owner = token, int(owner_chat_id)
         self.agent, self.registry, self.conversations, self.http = agent, registry, conversations, http
+        self.jobs = jobs            # a JobQueue: answers are worked out there, so polling never waits
         self._refused: set[int] = set()
 
     def call(self, method: str, http_timeout: float = 30, **params) -> dict:
@@ -81,18 +93,22 @@ class TelegramBot:
             self.send(chat_id, "Conversation cleared.")
         elif command == "/skills":
             self.send(chat_id, "\n".join(f"• {t.name}: {t.description}" for t in self.registry.tools.values()))
+        elif self.jobs:
+            self.jobs.submit(f"telegram: {text[:40]}", lambda: self.answer(chat_id, text), source="telegram")
         else:
-            done, used = threading.Event(), []
-            threading.Thread(target=self._keep_typing, args=(chat_id, done), daemon=True).start()
-            try:
-                answer = self.agent.ask(chat_id, text, on_tool=lambda name, args, result: used.append(name))
-            except Exception as error:   # brain offline, bad key, ...
-                answer = f"⚠️ I could not reach my brain: {type(error).__name__}: {error}"
-            finally:
-                done.set()
-            if used:
-                answer += "\n\n🔧 " + ", ".join(dict.fromkeys(used))
-            self.send(chat_id, answer)
+            self.answer(chat_id, text)
+
+    def answer(self, chat_id, text: str) -> None:
+        done = threading.Event()
+        threading.Thread(target=self._keep_typing, args=(chat_id, done), daemon=True).start()
+        try:
+            answer = self.agent.run(chat_id, text)
+            reply = answer.text + footer(answer)
+        except Exception as error:   # brain offline, bad key, ...
+            reply = f"⚠️ I could not reach my brain: {type(error).__name__}: {error}"
+        finally:
+            done.set()
+        self.send(chat_id, reply)
 
     def poll_once(self, offset: int | None) -> int | None:
         # timeout=25: Telegram holds the request open until a message arrives (long polling)

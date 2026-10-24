@@ -25,8 +25,7 @@ def test_text_mode_tool_call_for_small_models(make_runtime):
         say('```json\n{"tool": "calculate", "arguments": {"expression": "6*7"}}\n```'),
         say("The answer is 42."), native_tools=False)
     assert runtime.agent.ask("1", "6 times 7?") == "The answer is 42."
-    system = brain.calls[0]["messages"][0]["content"]
-    assert "calculate(expression: string)" in system   # tools described in the prompt
+    assert brain.calls[0]["tools"]                      # the brain describes them in text (see test_llm)
     assert "Result of calculate:\n42" in brain.calls[1]["messages"][-1]["content"]
 
 
@@ -62,3 +61,11 @@ def test_parse_text_tool_call_ignores_normal_json_answers():
     assert parse_text_tool_call('{"tool": "unknown_tool", "arguments": {}}', known) is None
     found = parse_text_tool_call('Sure. {"tool": "calculate", "arguments": {"expression": "1+1"}}', known)
     assert found.name == "calculate" and found.arguments == {"expression": "1+1"}
+
+
+def test_run_reports_tools_and_the_brain_that_answered(make_runtime):
+    runtime, _ = make_runtime(call("calculate", expression="2+2"),
+                              Reply(content="4", brain="Groq · llama", skipped=["OpenRouter · x: HTTP 429"]))
+    answer = runtime.agent.run("1", "2+2?")
+    assert (answer.text, answer.tools, answer.brain) == ("4", ["calculate"], "Groq · llama")
+    assert answer.skipped == ["OpenRouter · x: HTTP 429"]
