@@ -42,6 +42,7 @@ class ToolContext:
     memory: Any = None        # NoteStore
     reminders: Any = None     # ReminderStore
     chat_id: str = "terminal"
+    decisions: Any = None     # DecisionLog
 
 
 @dataclass

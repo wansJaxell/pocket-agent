@@ -79,6 +79,10 @@ form.send textarea{flex:1;resize:vertical;min-height:46px;max-height:40vh}
 border-radius:10px;background:var(--text);color:var(--bg);opacity:0;transition:opacity .2s;pointer-events:none;z-index:20}
 #toast.show{opacity:1}
 #toast.bad{background:var(--bad);color:#fff}
+label.choice{display:flex;gap:8px;align-items:center;border:1px solid var(--line);border-radius:10px;padding:8px 12px;cursor:pointer}
+label.choice input{margin:0}
+textarea.wide{width:100%;min-height:70px;resize:vertical}
+#lock .card{max-width:440px;margin:12vh auto 0}
 [hidden]{display:none!important}
 @media (max-width:560px){.msg{max-width:100%}header{flex-wrap:wrap}}
 </style>
@@ -87,9 +91,21 @@ border-radius:10px;background:var(--text);color:var(--bg);opacity:0;transition:o
 <header>
   <div class="brand"><span aria-hidden="true">🤖</span><b id="agent-name">PocketAgent</b><span class="chips" id="chips"></span></div>
   <div class="tools">
+    <button class="btn small" id="lock-now" type="button" data-t="access.lock_now" hidden></button>
     <select id="lang" aria-label="Language"><option value="tr">TR</option><option value="en">EN</option></select>
   </div>
 </header>
+<section id="lock" hidden>
+  <article class="card">
+    <h2>🔒 <span data-t="lock.title"></span></h2>
+    <p class="hint" data-t="lock.hint"></p>
+    <form class="row" id="unlock-form">
+      <input id="unlock-password" class="grow" type="password" autocomplete="current-password" data-ph="lock.password">
+      <button class="btn primary" data-t="lock.open"></button>
+    </form>
+    <button class="btn small" type="button" id="forgot" data-t="lock.forgot"></button>
+  </article>
+</section>
 <nav id="tabs">
   <button data-tab="setup" data-t="tab.setup"></button>
   <button data-tab="chat" data-t="tab.chat"></button>
@@ -114,8 +130,28 @@ border-radius:10px;background:var(--text);color:var(--bg);opacity:0;transition:o
       <h2><span class="num done">3</span><span data-t="step.name"></span></h2>
       <div class="row">
         <input id="name" class="grow" maxlength="40" autocomplete="off" aria-label="Name">
-        <button class="btn primary" id="save-name" data-t="save"></button>
       </div>
+      <textarea id="personality" class="wide" maxlength="2000" data-ph="name.personality"></textarea>
+      <div class="row"><button class="btn primary" id="save-name" data-t="save"></button></div>
+    </article>
+    <article class="card" id="step-access">
+      <h2><span class="num done">4</span><span data-t="step.access"></span><span class="tag" id="access-now"></span></h2>
+      <p class="hint" data-t="access.hint"></p>
+      <div class="row">
+        <label class="choice"><input type="radio" name="access" value="open"><span data-t="access.open"></span></label>
+        <label class="choice"><input type="radio" name="access" value="locked"><span data-t="access.locked"></span></label>
+      </div>
+      <div class="row" id="access-password" hidden>
+        <input id="pw1" class="grow" type="password" autocomplete="new-password" data-ph="access.pw1">
+        <input id="pw2" class="grow" type="password" autocomplete="new-password" data-ph="access.pw2">
+      </div>
+      <div class="row"><button class="btn primary" id="save-access" data-t="save"></button></div>
+    </article>
+    <article class="card" id="step-more">
+      <h2><span class="num">+</span><span data-t="step.more"></span></h2>
+      <label class="row"><input type="checkbox" id="autostart"><span data-t="auto.label"></span></label>
+      <p class="hint" id="autostart-hint"></p>
+      <p class="hint" id="memory"></p>
     </article>
   </section>
   <section id="tab-chat" hidden>
@@ -161,7 +197,21 @@ en: {
  "tg.timeout": "Nobody pressed START in time. Try again.", "tg.error": "Something went wrong. Try again.",
  "chat.placeholder": "Write a message… (Enter sends, Shift+Enter: new line)", "chat.send": "Send",
  "chat.reset": "New chat", "chat.thinking": "thinking…", "chat.nobrain": "Connect a brain in Setup first.",
- "chip.brain": "brain", "chip.nobrain": "no brain yet", "chip.tg": "Telegram", "chip.notg": "Telegram off"
+ "chip.brain": "brain", "chip.nobrain": "no brain yet", "chip.tg": "Telegram", "chip.notg": "Telegram off",
+ "name.personality": "Personality (optional): how should your agent talk and behave?",
+ "lock.title": "The panel is locked", "lock.hint": "Enter the panel password. Your API keys are encrypted with it.",
+ "lock.password": "Password", "lock.open": "Unlock", "lock.forgot": "I forgot the password",
+ "lock.forgot_confirm": "Without the password the encrypted keys cannot be recovered. Delete them now and connect the brains and Telegram again?",
+ "step.access": "Access", "access.open": "Open: no password", "access.locked": "Locked: password + encrypted keys",
+ "access.hint": "Open: the panel opens without a password and the keys are stored as plain text in your user folder.\nLocked: the panel asks for a password, and the API keys and the Telegram token are encrypted with a key made from it (scrypt + AES-256). The password is never stored: if you forget it, you enter the keys again.",
+ "access.pw1": "Password (at least 8 characters)", "access.pw2": "Repeat the password",
+ "access.mismatch": "The two passwords are different.",
+ "access.to_open": "Your keys will be saved as plain text on this computer. Continue?",
+ "access.now_open": "now: open", "access.now_locked": "now: locked ✓", "access.lock_now": "🔒 Lock",
+ "step.more": "More", "auto.label": "Start PocketAgent when Windows starts",
+ "auto.hint": "Adds a shortcut to your Startup folder. The agent window stays visible on the taskbar.",
+ "auto.unsupported": "Only available on Windows.",
+ "memory.line": "Memory (stays the same whichever brain answers): {notes} notes, {decisions} decisions."
 },
 tr: {
  "tab.setup": "Kurulum", "tab.chat": "Sohbet", "optional": "isteğe bağlı", "save": "Kaydet", "saved": "Kaydedildi ✓",
@@ -190,7 +240,21 @@ tr: {
  "tg.timeout": "Zamanında kimse START'a basmadı. Tekrar dene.", "tg.error": "Bir sorun çıktı. Tekrar dene.",
  "chat.placeholder": "Bir mesaj yaz… (Enter gönderir, Shift+Enter: yeni satır)", "chat.send": "Gönder",
  "chat.reset": "Yeni sohbet", "chat.thinking": "düşünüyor…", "chat.nobrain": "Önce Kurulum'dan bir beyin bağla.",
- "chip.brain": "beyin", "chip.nobrain": "beyin yok", "chip.tg": "Telegram", "chip.notg": "Telegram kapalı"
+ "chip.brain": "beyin", "chip.nobrain": "beyin yok", "chip.tg": "Telegram", "chip.notg": "Telegram kapalı",
+ "name.personality": "Kişilik (isteğe bağlı): ajanın nasıl konuşsun, nasıl davransın?",
+ "lock.title": "Panel kilitli", "lock.hint": "Panel şifreni gir. API anahtarların bu şifreyle şifrelendi.",
+ "lock.password": "Şifre", "lock.open": "Kilidi aç", "lock.forgot": "Şifremi unuttum",
+ "lock.forgot_confirm": "Şifre olmadan şifreli anahtarlar geri getirilemez. Şimdi silinsin ve beyinler ile Telegram yeniden mi bağlansın?",
+ "step.access": "Erişim", "access.open": "Açık: şifre yok", "access.locked": "Şifreli: şifre + şifrelenmiş anahtarlar",
+ "access.hint": "Açık: panel şifresiz açılır, anahtarlar kullanıcı klasöründe düz metin olarak durur.\nŞifreli: panel şifre ister; API anahtarları ve Telegram token'ı bu şifreden türetilen bir anahtarla şifrelenir (scrypt + AES-256). Şifre hiçbir yere kaydedilmez: unutursan anahtarları yeniden girersin.",
+ "access.pw1": "Şifre (en az 8 karakter)", "access.pw2": "Şifreyi tekrarla",
+ "access.mismatch": "İki şifre aynı değil.",
+ "access.to_open": "Anahtarların bu bilgisayarda düz metin olarak kaydedilecek. Devam edilsin mi?",
+ "access.now_open": "şu an: açık", "access.now_locked": "şu an: şifreli ✓", "access.lock_now": "🔒 Kilitle",
+ "step.more": "Diğer", "auto.label": "Windows açılışında PocketAgent'ı başlat",
+ "auto.hint": "Başlangıç klasörüne bir kısayol ekler. Ajan penceresi görev çubuğunda görünür kalır.",
+ "auto.unsupported": "Sadece Windows'ta kullanılabilir.",
+ "memory.line": "Hafıza (hangi beyin cevap verirse versin aynı kalır): {notes} not, {decisions} karar."
 }};
 let lang = document.documentElement.lang || (navigator.language.toLowerCase().startsWith("tr") ? "tr" : "en");
 let S = null, selected = null, tab = null, models = {}, local = null;
@@ -225,6 +289,7 @@ async function api(path, body) {
   }
   const reply = await fetch("/api/" + path, options);
   const data = await reply.json().catch(() => ({}));
+  if (reply.status === 401 && data.locked && path !== "state") setTimeout(refresh, 0);   // locked meanwhile
   if (!reply.ok) throw new Error(data.error || ("HTTP " + reply.status));
   return data;
 }
@@ -272,6 +337,7 @@ function showTab(name) {
 function renderHeader() {
   $("agent-name").textContent = S.identity.name;
   document.title = S.identity.name + " · PocketAgent";
+  if (S.locked) { fill($("chips")); delete shown.chips; return; }
   if (!changed("chips", [S.brains[0] && S.brains[0].label, S.telegram.connected])) return;
   fill($("chips"), 
     h("span", {class: "chip" + (S.brains.length ? " on" : ""),
@@ -416,7 +482,35 @@ function renderTelegram() {
 
 // ---------- step 3: name ----------
 function renderName() {
-  if (changed("name", S.identity.name) && document.activeElement !== $("name")) $("name").value = S.identity.name;
+  if (!changed("name", S.identity)) return;
+  if (document.activeElement !== $("name")) $("name").value = S.identity.name;
+  if (document.activeElement !== $("personality")) $("personality").value = S.identity.personality || "";
+}
+
+// ---------- step 4: access; more ----------
+function renderAccess() {
+  $("lock-now").hidden = S.access !== "locked";
+  $("access-now").textContent = t(S.access === "locked" ? "access.now_locked" : "access.now_open");
+  if (changed("access", S.access)) {
+    document.querySelectorAll('input[name="access"]').forEach(r => r.checked = r.value === S.access);
+    $("access-password").hidden = S.access !== "locked";
+  }
+}
+
+function renderMore() {
+  const auto = S.autostart;
+  $("autostart").checked = auto.enabled;
+  $("autostart").disabled = !auto.supported;
+  $("autostart-hint").textContent = t(auto.supported ? "auto.hint" : "auto.unsupported");
+  $("memory").textContent = t("memory.line").replace("{notes}", S.memory.notes).replace("{decisions}", S.memory.decisions);
+}
+
+// ---------- locked panel ----------
+function showLock(locked) {
+  $("lock").hidden = !locked;
+  $("tabs").hidden = locked;
+  document.querySelector("main").hidden = locked;
+  if (locked) $("unlock-password").focus();
 }
 
 // ---------- chat ----------
@@ -474,13 +568,18 @@ function renderNotices() {
 }
 
 function render() {
-  renderHeader(); renderProviders(); renderBrains(); renderTelegram(); renderName(); renderNotices();
+  renderHeader();
+  showLock(!!S.locked);
+  if (S.locked) return;
+  renderProviders(); renderBrains(); renderTelegram(); renderName(); renderAccess(); renderMore(); renderNotices();
 }
 
 async function refresh() {
   try {
+    const wasLocked = !S || S.locked;
     S = await api("state");
     render();
+    if (wasLocked && !S.locked && !tab) showTab(S.setup.brain ? "chat" : "setup");
   } catch (error) { toast(error.message, true); }
 }
 
@@ -492,9 +591,48 @@ $("lang").addEventListener("change", () => act(null, async () => {
   await api("language", {language: lang});
 }));
 $("save-name").addEventListener("click", () => act($("save-name"), async () => {
-  await api("identity", {name: $("name").value});
+  await api("identity", {name: $("name").value, personality: $("personality").value});
   toast(t("saved"));
   await refresh();
+}));
+document.querySelectorAll('input[name="access"]').forEach(r => r.addEventListener("change", () => {
+  $("access-password").hidden = r.value !== "locked" || !r.checked;
+}));
+$("save-access").addEventListener("click", () => act($("save-access"), async () => {
+  const mode = document.querySelector('input[name="access"]:checked').value;
+  if (mode === "locked") {
+    if ($("pw1").value !== $("pw2").value) throw new Error(t("access.mismatch"));
+    await api("access", {mode, password: $("pw1").value});
+  } else {
+    if (S.access === "locked" && !confirm(t("access.to_open"))) return;
+    await api("access", {mode});
+  }
+  $("pw1").value = $("pw2").value = "";
+  toast(t("saved"));
+  await refresh();
+}));
+$("autostart").addEventListener("change", () => act($("autostart"), async () => {
+  S.autostart = await api("autostart", {enabled: $("autostart").checked});
+  renderMore();
+}));
+$("lock-now").addEventListener("click", () => act($("lock-now"), async () => {
+  await api("lock", {});
+  await refresh();
+}));
+$("unlock-form").addEventListener("submit", event => {
+  event.preventDefault();
+  act(null, async () => {
+    await api("unlock", {password: $("unlock-password").value});
+    $("unlock-password").value = "";
+    historyLoaded = false;
+    await refresh();
+  });
+});
+$("forgot").addEventListener("click", () => act($("forgot"), async () => {
+  if (!confirm(t("lock.forgot_confirm"))) return;
+  await api("vault/forget", {});
+  await refresh();
+  showTab("setup");
 }));
 $("send").addEventListener("submit", event => {
   event.preventDefault();
@@ -516,7 +654,6 @@ $("reset").addEventListener("click", () => act($("reset"), async () => {
   await refresh();
   if (!S) return;
   if (!S.language) api("language", {language: lang}).catch(() => {});   // Telegram notices follow it
-  showTab(S.setup.brain ? "chat" : "setup");
   setInterval(refresh, 2000);
 })();
 </script>

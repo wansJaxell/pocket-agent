@@ -11,6 +11,8 @@ import os
 from dataclasses import asdict, dataclass, field, fields, replace
 from pathlib import Path
 
+from pocketagent import vault
+
 
 def home_dir() -> Path:
     custom = os.getenv("POCKETAGENT_HOME")
@@ -68,6 +70,8 @@ class Config:
     history_messages: int = 20      # how much of the conversation the model sees
     language: str = ""              # "en" or "tr"; empty: follow the browser
     panel_port: int = 8765
+    access: str = "open"            # "open": no password; "locked": keys encrypted with the panel password
+    vault: dict | None = None       # the encrypted keys and token (locked mode only)
 
     @property
     def brain_ready(self) -> bool:
@@ -91,6 +95,47 @@ class Config:
     def chain(self) -> list[BrainConfig]:
         """The brains in priority order, each with its provider's key filled in."""
         return [self.with_key(b) for b in self.brains()]
+
+    @property
+    def locked(self) -> bool:
+        """Locked mode, and the password has not been given yet: keys and token are unknown."""
+        return self.access == "locked" and _vault_key(self) is None
+
+
+# ---------- locked mode: the secrets (API keys, Telegram token) live in an encrypted vault ----------
+def _vault_key(config: Config):
+    return getattr(config, "_vault_key", None)      # in memory only, never saved
+
+
+def unlock(config: Config, password: str) -> None:
+    """Decrypt the keys and token into the config (raises vault.WrongPassword)."""
+    secrets, key = vault.open_vault(config.vault or {}, password)
+    config.keys = dict(secrets.get("keys", {}))
+    config.telegram.token = secrets.get("telegram_token", "")
+    config._vault_key = key
+
+
+def check_password(config: Config, password: str) -> None:
+    """Raise vault.WrongPassword unless this is the panel password."""
+    vault.open_vault(config.vault or {}, password)
+
+
+def lock_with(config: Config, password: str) -> None:
+    """Switch to locked mode (or change the password): the next save encrypts the secrets."""
+    config.access = "locked"
+    config._vault_key = vault.derive(password)
+
+
+def open_access(config: Config) -> None:
+    """Back to open mode: the next save writes the keys in plain text again."""
+    config.access, config.vault, config._vault_key = "open", None, None
+
+
+def forget_secrets(config: Config) -> None:
+    """For a forgotten password: drop the vault; keys and the Telegram bot must be set up again."""
+    open_access(config)
+    config.keys = {}
+    config.telegram = TelegramConfig()
 
 
 def _build(cls, data):
@@ -118,8 +163,17 @@ def load(path: Path | None = None) -> Config:
 def save(config: Config, path: Path | None = None) -> Path:
     path = path or config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
+    data = asdict(config)
+    if config.access == "locked":           # secrets never touch the disk in plain text
+        key = _vault_key(config)
+        if key is not None:
+            config.vault = data["vault"] = vault.seal(key, {"keys": config.keys,
+                                                            "telegram_token": config.telegram.token})
+        data["keys"], data["telegram"]["token"] = {}, ""
+        for brain in [data["brain"], *data["fallbacks"]]:
+            brain["api_key"] = ""
     tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(asdict(config), indent=2, ensure_ascii=False), encoding="utf-8")
+    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
     try:
         os.chmod(tmp, 0o600)   # the file holds API keys: readable by you only (where supported)
     except OSError:

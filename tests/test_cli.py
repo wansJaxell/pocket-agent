@@ -33,3 +33,19 @@ def test_user_skills_are_loaded_at_start(home):
         "    '''Greet someone.'''\n    return f'Hello {name}'\n", encoding="utf-8")
     runtime = Runtime(cfg.Config())
     assert runtime.registry.tools["greet"].skill == "user:greet"
+
+
+def test_terminal_commands_ask_for_the_panel_password_in_locked_mode(monkeypatch, capsys):
+    from pocketagent import vault
+    from pocketagent.cli import unlock_in_terminal
+    monkeypatch.setattr(vault, "default_kdf", lambda: {"name": "scrypt", "n": 2 ** 10, "r": 8, "p": 1})
+    config = cfg.Config()
+    config.keys = {"groq": "gsk_secret"}
+    cfg.lock_with(config, "a long password")
+    cfg.save(config)
+    locked = cfg.load()
+    answers = iter(["wrong", "a long password"])
+    assert unlock_in_terminal(locked, ask=lambda prompt: next(answers))
+    assert locked.keys == {"groq": "gsk_secret"}
+    assert "Wrong password" in capsys.readouterr().out
+    assert unlock_in_terminal(cfg.Config()) is True          # open mode: nothing to ask

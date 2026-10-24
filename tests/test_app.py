@@ -117,10 +117,11 @@ def test_a_wrong_telegram_token_is_refused():
 
 
 # ---------- step 3: name; chat ----------
-def test_the_agent_name_is_saved():
+def test_name_and_personality_are_saved_in_identity_json(home):
     app, _ = make_app()
-    app.set_identity("  Robi ")
-    assert app.state()["identity"]["name"] == "Robi"
+    app.set_identity("  Robi ", "Short, friendly answers.")
+    assert app.state()["identity"] == {"name": "Robi", "personality": "Short, friendly answers."}
+    assert json.loads((home / "memory" / "identity.json").read_text(encoding="utf-8"))["name"] == "Robi"
     with pytest.raises(PanelError):
         app.set_identity("   ")
 

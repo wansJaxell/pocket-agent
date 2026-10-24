@@ -9,6 +9,7 @@
 """
 
 import argparse
+import getpass
 import sys
 import threading
 import time
@@ -16,7 +17,7 @@ import webbrowser
 
 import requests
 
-from pocketagent import __version__
+from pocketagent import __version__, vault
 from pocketagent import config as cfg
 from pocketagent.app import App, Runtime, start_reminder_loop
 
@@ -112,6 +113,19 @@ def run(config: cfg.Config, mode: str) -> None:
         stop.set()
 
 
+def unlock_in_terminal(config: cfg.Config, ask=getpass.getpass, tries: int = 3) -> bool:
+    """Locked mode without the panel: ask for the panel password here."""
+    if not config.locked:
+        return True
+    for _ in range(tries):
+        try:
+            cfg.unlock(config, ask("Panel password (keys are encrypted): "))
+            return True
+        except vault.WrongPassword:
+            print("Wrong password.")
+    return False
+
+
 def already_running(port: int) -> bool:
     """Is a PocketAgent panel already answering on this port?"""
     session = requests.Session()
@@ -123,7 +137,10 @@ def already_running(port: int) -> bool:
 
 
 def serve(config: cfg.Config, open_browser: bool = True, port: int | None = None) -> None:
-    """Start the panel (only on 127.0.0.1), Telegram and reminders; open the panel in the browser."""
+    """Start the panel (only on 127.0.0.1), Telegram and reminders; open the panel in the browser.
+
+    In locked mode nothing secret is known until the password is typed into the panel.
+    """
     from pocketagent.panel import PanelServer
 
     port = port or config.panel_port
@@ -141,6 +158,8 @@ def serve(config: cfg.Config, open_browser: bool = True, port: int | None = None
     server.app.start_services()
     print(f"PocketAgent {__version__} panel: {server.url}  (only this computer can open it)")
     print("Keep this window open while you use the agent. Press Ctrl+C to stop.")
+    if config.locked:
+        print("The panel is locked: open it and enter your password to start the agent.")
     if open_browser:
         webbrowser.open(server.url)
     try:
@@ -160,17 +179,22 @@ def main(argv=None) -> None:
                         choices=["start", "setup", "chat", "telegram", "skills", "doctor"])
     parser.add_argument("--no-browser", action="store_true", help="do not open the panel in the browser")
     parser.add_argument("--port", type=int, default=None, help="panel port (default 8765)")
+    parser.add_argument("--autostart", action="store_true",
+                        help="started with Windows: open the browser only if the panel needs the password")
     args = parser.parse_args(argv)
 
     try:
         config = cfg.load()
+        if args.command in ("setup", "chat", "telegram", "doctor") and not unlock_in_terminal(config):
+            return
         if args.command == "setup" or (args.command in ("chat", "telegram") and not config.brain_ready):
             from pocketagent.setup_wizard import run_setup
             config = run_setup(config)
             if not config.brain_ready or args.command == "setup":
                 return
         if args.command == "start":
-            serve(config, open_browser=not args.no_browser, port=args.port)
+            serve(config, port=args.port,
+                  open_browser=not args.no_browser and (not args.autostart or config.locked))
         elif args.command == "skills":
             list_skills(Runtime(config))
         elif args.command == "doctor":

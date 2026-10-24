@@ -5,19 +5,21 @@ a browser, a model or Telegram.
 """
 
 import re
+import secrets
 import threading
+import time
 from collections import deque
 from datetime import datetime
 
 import requests
 
-from pocketagent import __version__
+from pocketagent import __version__, autostart, vault
 from pocketagent import config as cfg
 from pocketagent.agent import Agent
 from pocketagent.config import BrainConfig, Config, TelegramConfig
 from pocketagent.jobs import JobQueue
 from pocketagent.llm import PROVIDERS, Brain, BrainError, Router, brain_label, list_models, probe
-from pocketagent.memory import ConversationStore, NoteStore, ReminderStore
+from pocketagent.memory import ConversationStore, DecisionLog, IdentityStore, NoteStore, ReminderStore
 from pocketagent.oauth import authorize_url, exchange_code, make_verifier
 from pocketagent.setup_wizard import TELEGRAM_API, detect_local_models, wait_for_owner
 from pocketagent.tools import ToolRegistry
@@ -37,8 +39,11 @@ class Runtime:
         self.conversations = ConversationStore(memory, keep=config.history_messages)
         self.notes = NoteStore(memory)
         self.reminders = ReminderStore(memory)
+        self.identity = IdentityStore(memory, default_name=config.agent_name)
+        self.decisions = DecisionLog(memory)
         self.agent = Agent(config, brain or Router(config, http=http), self.registry, self.conversations,
-                           self.notes, self.reminders, cfg.workspace_dir())
+                           self.notes, self.reminders, cfg.workspace_dir(),
+                           identity=self.identity, decisions=self.decisions)
 
 
 def start_reminder_loop(runtime: Runtime, notify, stop: threading.Event) -> None:
@@ -59,6 +64,8 @@ def mask(key: str) -> str:
 
 
 class App:
+    WRONG_PASSWORD_DELAY = 1.0      # seconds: makes guessing the panel password slow
+
     def __init__(self, config: Config, http=None, runtime: Runtime | None = None):
         self.config = config
         self.http = http or requests
@@ -74,6 +81,7 @@ class App:
         self._verifier: str | None = None                 # OpenRouter login in progress
         self._services = threading.Event()
         self._stop = threading.Event()
+        self.sessions: set[str] = set()                   # browsers that gave the panel password
 
     def save(self) -> None:
         with self.lock:
@@ -82,20 +90,32 @@ class App:
     def notice(self, text: str) -> None:
         self.notices.append({"time": datetime.now().isoformat(timespec="seconds"), "text": text})
 
+    @property
+    def locked(self) -> bool:
+        return self.config.locked
+
     # ---------- what the panel shows ----------
     def state(self) -> dict:
         c = self.config
         return {
             "app": "PocketAgent", "version": __version__, "language": c.language,
-            "identity": {"name": c.agent_name},
+            "identity": self.runtime.identity.get(),
             "providers": [self._provider(pid) for pid in PROVIDERS],
             "custom_url": c.custom_url,
             "brains": [self._brain(i, b) for i, b in enumerate(c.brains())],
             "telegram": self._telegram(),
+            "access": c.access,
+            "autostart": {"supported": autostart.supported(), "enabled": autostart.is_enabled()},
             "setup": {"brain": c.brain_ready, "telegram": c.telegram_ready},
+            "memory": {"notes": len(self.runtime.notes.all()), "decisions": len(self.runtime.decisions.all())},
             "jobs": self.jobs.recent(10),
             "notices": list(self.notices),
         }
+
+    def locked_state(self) -> dict:
+        """All a browser sees before it gives the panel password."""
+        return {"app": "PocketAgent", "version": __version__, "locked": True, "language": self.config.language,
+                "identity": {"name": self.runtime.identity.get()["name"]}}
 
     def _provider(self, pid: str) -> dict:
         p, key = PROVIDERS[pid], self.config.keys.get(pid, "")
@@ -262,8 +282,9 @@ class App:
             self.config.telegram = TelegramConfig(token, owner, username)
             self.save()
         try:
+            name = self.runtime.identity.get()["name"]
             self.http.post(TELEGRAM_API.format(token=token, method="sendMessage"), timeout=15, json={
-                "chat_id": owner, "text": f"✅ {self.config.agent_name} is connected. Only this chat can talk to me."})
+                "chat_id": owner, "text": f"✅ {name} is connected. Only this chat can talk to me."})
         except Exception:
             pass
         self.telegram_status = "connected"
@@ -280,7 +301,7 @@ class App:
     def start_telegram(self) -> None:
         from pocketagent.telegram_bot import TelegramBot
         with self.lock:
-            if self.bot or not self.config.telegram_ready:
+            if self.bot or self.locked or not self.config.telegram_ready:
                 return
             t, r = self.config.telegram, self.runtime
             self._bot_stop = threading.Event()
@@ -294,14 +315,80 @@ class App:
                 self._bot_stop.set()
             self.bot = self._bot_stop = None
 
-    # ---------- step 3: name; chat ----------
-    def set_identity(self, name: str) -> None:
-        name = (name or "").strip()
+    # ---------- step 3: name and personality ----------
+    def set_identity(self, name: str, personality: str = "") -> dict:
+        name = (name or "").strip()[:40]
         if not name:
             raise PanelError("The agent needs a name.")
         with self.lock:
-            self.config.agent_name = name[:40]
+            identity = self.runtime.identity.set(name, (personality or "")[:2000])
+            self.config.agent_name = name          # also kept in config.json for the terminal tools
             self.save()
+        return identity
+
+    # ---------- step 4: access (open, or locked with an encrypted vault) ----------
+    def new_session(self) -> str:
+        session = secrets.token_urlsafe(32)
+        self.sessions.add(session)
+        return session
+
+    def signed_in(self, session: str | None) -> bool:
+        return self.config.access != "locked" or (bool(session) and session in self.sessions and not self.locked)
+
+    def logout(self, session: str | None) -> None:
+        self.sessions.discard(session)
+
+    def unlock(self, password: str) -> str:
+        """Check the panel password; on the first unlock also decrypt the keys and start Telegram."""
+        try:
+            if self.locked:
+                cfg.unlock(self.config, password or "")
+            else:
+                cfg.check_password(self.config, password or "")
+        except vault.WrongPassword:
+            time.sleep(self.WRONG_PASSWORD_DELAY)
+            raise PanelError("Wrong password.") from None
+        if self._services.is_set():
+            self.start_telegram()
+        return self.new_session()
+
+    def set_access(self, mode: str, password: str = "") -> str | None:
+        """Open mode, or locked mode with a (new) password. Returns a session for this browser."""
+        if self.locked:
+            raise PanelError("Unlock the panel first.")
+        if mode == "open":
+            with self.lock:
+                cfg.open_access(self.config)
+                self.save()
+            self.sessions.clear()
+            return None
+        if mode != "locked":
+            raise PanelError("Unknown access mode.")
+        if len(password or "") < 8:
+            raise PanelError("Choose a password of at least 8 characters.")
+        with self.lock:
+            cfg.lock_with(self.config, password)
+            self.save()
+        self.sessions.clear()                    # other browsers must give the new password
+        return self.new_session()
+
+    def forget_vault(self) -> None:
+        """Forgotten password: delete the encrypted keys; they must be entered again."""
+        self.stop_telegram()
+        with self.lock:
+            cfg.forget_secrets(self.config)
+            self.save()
+        self.sessions.clear()
+        self.telegram_status, self._telegram_pending = "idle", ""
+
+    def set_autostart(self, enabled: bool) -> dict:
+        try:
+            autostart.enable() if enabled else autostart.disable()
+        except autostart.AutostartError as error:
+            raise PanelError(str(error)) from None
+        return {"supported": autostart.supported(), "enabled": autostart.is_enabled()}
+
+    # ---------- chat ----------
 
     def set_language(self, language: str) -> None:
         if language not in ("en", "tr"):

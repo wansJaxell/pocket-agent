@@ -17,6 +17,8 @@ import secrets
 import socket
 import socketserver
 import threading
+from dataclasses import dataclass
+from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
@@ -26,32 +28,48 @@ from pocketagent.panel_page import render_page
 MAX_BODY = 1_000_000
 
 
-def _text(body: dict, key: str) -> str:
-    value = body.get(key, "")
-    return value if isinstance(value, str) else str(value)
+@dataclass
+class Request:
+    app: App
+    panel: "PanelServer"
+    body: dict
+    query: dict
+    session: str | None          # this browser's session cookie (locked mode)
+
+    def text(self, key: str) -> str:
+        value = self.body.get(key, "")
+        return value if isinstance(value, str) else str(value)
 
 
-# (method, path after /api/) -> function(app, panel, body, query)
+# (method, path after /api/) -> function(request). A route may return {"_session": id} to sign
+# this browser in (a cookie) or {"_session": None} to sign it out.
 ROUTES = {
-    ("GET", "state"): lambda app, panel, b, q: app.state(),
-    ("GET", "local"): lambda app, panel, b, q: app.local_models(),
-    ("GET", "models"): lambda app, panel, b, q: app.models(q.get("provider", "")),
-    ("GET", "job"): lambda app, panel, b, q: app.job(q.get("id", "")),
-    ("GET", "history"): lambda app, panel, b, q: app.history(),
-    ("POST", "key"): lambda app, panel, b, q: app.save_key(_text(b, "provider"), _text(b, "key"), _text(b, "base_url")),
-    ("POST", "brains/add"): lambda app, panel, b, q: app.add_brain(_text(b, "provider"), _text(b, "model"),
-                                                                   b.get("free", True) is not False),
-    ("POST", "brains/move"): lambda app, panel, b, q: app.move_brain(b.get("index"), b.get("delta", 0)),
-    ("POST", "brains/remove"): lambda app, panel, b, q: app.remove_brain(b.get("index")),
-    ("POST", "brains/test"): lambda app, panel, b, q: app.test_brain(b.get("index")),
-    ("POST", "openrouter/start"): lambda app, panel, b, q: {"url": app.openrouter_start(panel.callback_url)},
-    ("POST", "telegram"): lambda app, panel, b, q: app.telegram_connect(_text(b, "token")),
-    ("POST", "telegram/disconnect"): lambda app, panel, b, q: app.telegram_disconnect(),
-    ("POST", "identity"): lambda app, panel, b, q: app.set_identity(_text(b, "name")),
-    ("POST", "language"): lambda app, panel, b, q: app.set_language(_text(b, "language")),
-    ("POST", "chat"): lambda app, panel, b, q: app.chat(_text(b, "text")),
-    ("POST", "chat/reset"): lambda app, panel, b, q: app.reset_chat(),
+    ("GET", "state"): lambda r: r.app.state() if r.app.signed_in(r.session) else r.app.locked_state(),
+    ("GET", "local"): lambda r: r.app.local_models(),
+    ("GET", "models"): lambda r: r.app.models(r.query.get("provider", "")),
+    ("GET", "job"): lambda r: r.app.job(r.query.get("id", "")),
+    ("GET", "history"): lambda r: r.app.history(),
+    ("POST", "key"): lambda r: r.app.save_key(r.text("provider"), r.text("key"), r.text("base_url")),
+    ("POST", "brains/add"): lambda r: r.app.add_brain(r.text("provider"), r.text("model"), r.body.get("free") is not False),
+    ("POST", "brains/move"): lambda r: r.app.move_brain(r.body.get("index"), r.body.get("delta", 0)),
+    ("POST", "brains/remove"): lambda r: r.app.remove_brain(r.body.get("index")),
+    ("POST", "brains/test"): lambda r: r.app.test_brain(r.body.get("index")),
+    ("POST", "openrouter/start"): lambda r: {"url": r.app.openrouter_start(r.panel.callback_url)},
+    ("POST", "telegram"): lambda r: r.app.telegram_connect(r.text("token")),
+    ("POST", "telegram/disconnect"): lambda r: r.app.telegram_disconnect(),
+    ("POST", "identity"): lambda r: r.app.set_identity(r.text("name"), r.text("personality")),
+    ("POST", "language"): lambda r: r.app.set_language(r.text("language")),
+    ("POST", "access"): lambda r: {"_session": r.app.set_access(r.text("mode"), r.text("password"))},
+    ("POST", "unlock"): lambda r: {"_session": r.app.unlock(r.text("password"))},
+    ("POST", "lock"): lambda r: (r.app.logout(r.session), {"_session": None})[1],
+    ("POST", "vault/forget"): lambda r: r.app.forget_vault(),
+    ("POST", "autostart"): lambda r: r.app.set_autostart(r.body.get("enabled") is True),
+    ("POST", "chat"): lambda r: r.app.chat(r.text("text")),
+    ("POST", "chat/reset"): lambda r: r.app.reset_chat(),
 }
+
+# what a browser may do before it gives the panel password (locked mode)
+OPEN_WHEN_LOCKED = {("GET", "state"), ("POST", "unlock"), ("POST", "vault/forget"), ("POST", "language")}
 
 
 class _Server(ThreadingHTTPServer):
@@ -74,6 +92,7 @@ class PanelServer:
         self.url = f"http://127.0.0.1:{self.port}/"
         self.hosts = {f"127.0.0.1:{self.port}", f"localhost:{self.port}"}
         self.origins = {f"http://{host}" for host in self.hosts}
+        self.cookie = f"pocketagent_{self.port}"    # cookies are per host, not per port
         self._thread: threading.Thread | None = None
 
     @property
@@ -118,9 +137,14 @@ class PanelServer:
                     return self._json(404, {"error": "Not found."})
                 if not hmac.compare_digest(self.headers.get("X-Pocket-Token", ""), panel.token):
                     return self._json(403, {"error": "Missing or wrong panel token: reload the page."})
-                route = ROUTES.get((method, url.path[len("/api/"):]))
+                name = (method, url.path[len("/api/"):])
+                route = ROUTES.get(name)
                 if route is None:
                     return self._json(404, {"error": "Not found."})
+                cookie = SimpleCookie(self.headers.get("Cookie", "")).get(panel.cookie)
+                session = cookie.value if cookie else None
+                if name not in OPEN_WHEN_LOCKED and not panel.app.signed_in(session):
+                    return self._json(401, {"error": "The panel is locked: enter the password.", "locked": True})
                 body = {}
                 if method == "POST":
                     if self.headers.get("Content-Type", "").split(";")[0].strip() != "application/json":
@@ -135,15 +159,22 @@ class PanelServer:
                     if not isinstance(body, dict):
                         return self._json(400, {"error": "Send a JSON object."})
                 try:
-                    result = route(panel.app, panel, body, query)
+                    result = route(Request(panel.app, panel, body, query, session))
                 except PanelError as error:
                     return self._json(400, {"error": str(error)})
                 except Exception as error:     # show the problem instead of a broken page
                     return self._json(500, {"error": f"{type(error).__name__}: {error}"})
-                self._json(200, {"ok": True} if result is None else result)
+                extra = []
+                if isinstance(result, dict) and "_session" in result:
+                    new = result.pop("_session")
+                    extra.append(("Set-Cookie", f"{panel.cookie}={new}; HttpOnly; SameSite=Strict; Path=/" if new
+                                  else f"{panel.cookie}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"))
+                self._json(200, result or {"ok": True}, extra)
 
-            def _headers(self, status: int, content_type: str, length: int, csp: str) -> None:
+            def _headers(self, status: int, content_type: str, length: int, csp: str, extra=()) -> None:
                 self.send_response(status)
+                for header, value in extra:
+                    self.send_header(header, value)
                 self.send_header("Content-Type", content_type)
                 self.send_header("Content-Length", str(length))
                 self.send_header("Cache-Control", "no-store")
@@ -153,10 +184,10 @@ class PanelServer:
                 self.send_header("Content-Security-Policy", csp)
                 self.end_headers()
 
-            def _json(self, status: int, data) -> None:
+            def _json(self, status: int, data, extra=()) -> None:
                 raw = json.dumps(data, ensure_ascii=False).encode("utf-8")
                 self._headers(status, "application/json; charset=utf-8", len(raw),
-                              "default-src 'none'; frame-ancestors 'none'")
+                              "default-src 'none'; frame-ancestors 'none'", extra)
                 self.wfile.write(raw)
 
             def _html(self, status: int, page: str, nonce: str = "") -> None:

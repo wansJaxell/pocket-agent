@@ -1,6 +1,7 @@
-"""Small JSON stores: conversation history, long-term notes and reminders.
+"""Small JSON stores: identity, conversation history, notes, decisions and reminders.
 
-Plain JSON files keep everything local, readable and easy to back up.
+Plain JSON files keep everything local, readable and easy to back up. They belong to the agent,
+not to the brain: switch to another model and it still knows its name, the user and past decisions.
 """
 
 import json
@@ -108,3 +109,60 @@ class ReminderStore:
             if due:
                 self.file.write([r for r in items if r not in due])
             return due
+
+
+class IdentityStore:
+    """Who the agent is: its name and the personality the user gave it (identity.json)."""
+
+    def __init__(self, folder: Path, default_name: str = "PocketAgent"):
+        self.file = _JsonFile(folder / "identity.json", dict)
+        self.default_name = default_name
+
+    def get(self) -> dict:
+        data = self.file.read()
+        return {"name": data.get("name") or self.default_name, "personality": data.get("personality", "")}
+
+    def set(self, name: str, personality: str = "") -> dict:
+        with self.file._lock:
+            data = {"name": name.strip(), "personality": personality.strip(),
+                    "updated": datetime.now().isoformat(timespec="seconds")}
+            self.file.write(data)
+        return self.get()
+
+
+class DecisionLog:
+    """Important decisions made with the user, one JSON object per line (decisions.jsonl).
+
+    Append-only: a decision is never rewritten, so the log also shows how plans changed over time.
+    """
+
+    def __init__(self, folder: Path):
+        self.path = folder / "decisions.jsonl"
+        self._lock = threading.Lock()
+
+    def add(self, decision: str, reason: str = "", source: str = "agent") -> dict:
+        with self._lock:
+            entry = {"id": len(self.all()) + 1, "time": datetime.now().isoformat(timespec="minutes"),
+                     "decision": decision.strip(), "reason": reason.strip(), "source": source}
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            return entry
+
+    def all(self) -> list[dict]:
+        if not self.path.exists():
+            return []
+        entries = []
+        for line in self.path.read_text(encoding="utf-8").splitlines():
+            try:
+                entries.append(json.loads(line))
+            except json.JSONDecodeError:      # a half-written last line after a crash
+                continue
+        return entries
+
+    def recent(self, limit: int = 15) -> list[dict]:
+        return self.all()[-limit:]
+
+    def search(self, keyword: str) -> list[dict]:
+        keyword = keyword.lower()
+        return [d for d in self.all() if keyword in (d["decision"] + " " + d.get("reason", "")).lower()]
