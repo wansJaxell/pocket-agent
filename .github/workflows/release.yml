@@ -1,0 +1,44 @@
+name: Build executables
+
+# Push a tag like v0.1.0 to build Windows, macOS and Linux executables
+# and attach them to a GitHub Release. "Run workflow" builds them without releasing.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: pip install . pyinstaller
+      - name: Build one-file executable
+        run: pyinstaller --onefile --name PocketAgent --collect-submodules pocketagent.skills pocketagent/__main__.py
+      - name: Name it after the operating system
+        shell: bash
+        run: |
+          os=$(echo "$RUNNER_OS" | tr '[:upper:]' '[:lower:]')
+          cd dist
+          if [ "$RUNNER_OS" = "Windows" ]; then mv PocketAgent.exe PocketAgent-windows.exe; else mv PocketAgent "PocketAgent-$os"; fi
+          ls -la
+      - uses: actions/upload-artifact@v5
+        with:
+          name: PocketAgent-${{ runner.os }}
+          path: dist/*
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*

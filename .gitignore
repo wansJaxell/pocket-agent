@@ -1,0 +1,20 @@
+# Python cache
+__pycache__/
+*.pyc
+*.egg-info/
+
+# Virtual environment
+.venv/
+venv/
+
+# Test cache
+.pytest_cache/
+
+# PyInstaller output
+build/
+dist/
+*.spec
+
+# Local settings (contain API keys). The real config lives in your user folder anyway.
+config.json
+.env
