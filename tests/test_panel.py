@@ -113,3 +113,24 @@ def test_the_stop_button_works_even_on_a_locked_panel(panel, client):
     reply = api(client, panel, "POST", "api/stop")
     assert reply.status_code == 200 and reply.json()["approvals"] == 0
     assert api(client, panel, "POST", "api/computer_use", {"enabled": True}).status_code == 401
+
+
+def test_workspace_files_are_served_for_the_chat_and_nothing_outside(panel, client, home):
+    media = home / "workspace" / "media"
+    media.mkdir(parents=True)
+    (media / "image-1.png").write_bytes(b"\x89PNG-bytes")
+    (media / "page.html").write_text("<script>alert(1)</script>", encoding="utf-8")
+    (home / "config.json").write_text("{}", encoding="utf-8")
+    picture = api(client, panel, "GET", "api/file?path=media/image-1.png")
+    assert picture.status_code == 200 and picture.headers["Content-Type"] == "image/png"
+    assert picture.content == b"\x89PNG-bytes" and "sandbox" in picture.headers["Content-Security-Policy"]
+    page = api(client, panel, "GET", "api/file?path=media/page.html")       # never rendered as a page
+    assert page.headers["Content-Type"] == "application/octet-stream" and "attachment" in page.headers["Content-Disposition"]
+    assert api(client, panel, "GET", "api/file?path=../config.json").status_code == 400
+    assert client.get(panel.url + "api/file?path=media/image-1.png", timeout=5).status_code == 403   # needs the token
+
+
+def test_the_panel_is_english_unless_turkish_was_chosen(panel, client):
+    assert '<html lang="en">' in client.get(panel.url, timeout=5).text
+    panel.app.set_language("tr")
+    assert '<html lang="tr">' in client.get(panel.url, timeout=5).text

@@ -44,6 +44,7 @@ class Action:
     params: dict                    # everything the user should see before saying yes
     scope: dict                     # what a saved rule must match exactly
     classes: set = field(default_factory=set)   # e.g. {"delete"}: see ALWAYS_ASK
+    needs_computer_use: bool = True  # False: not an action on the computer (e.g. paying for an image)
 
 
 _PATTERNS = {
@@ -238,7 +239,7 @@ class ApprovalEngine:
     def request(self, action: Action, tainted=(), source: str = "", generation: int | None = None) -> str:
         """Block until the user decides. Returns how it was allowed; raises Refused or Stopped."""
         self.check(generation)
-        if not self.enabled():
+        if action.needs_computer_use and not self.enabled():
             self._log(action, "blocked", source=source)
             raise Refused("computer use is off (safe mode); the user can turn it on in the panel")
         classes = set(action.classes) | ({"untrusted"} if tainted else set())

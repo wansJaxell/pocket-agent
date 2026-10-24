@@ -26,7 +26,7 @@ def test_saving_a_key_checks_it_and_lists_the_models():
     app, web = make_app(("GET", "api.groq.com/openai/v1/models", response(
         {"data": [{"id": "llama-3.3-70b-versatile"}, {"id": "whisper-large-v3"}]})))
     result = app.save_key("groq", "  gsk_test  ")
-    assert result["models"] == [{"id": "llama-3.3-70b-versatile", "free": True}]
+    assert [m["id"] for m in result["models"]] == ["llama-3.3-70b-versatile"]
     assert app.config.keys["groq"] == "gsk_test" and cfg.load().keys["groq"] == "gsk_test"
     assert web.requests[0][2]["headers"]["Authorization"] == "Bearer gsk_test"
 
@@ -132,7 +132,8 @@ def test_panel_chat_runs_as_a_job_and_says_which_brain_answered():
     app.config.keys["groq"] = "g"
     job = wait_for(app.chat("Selam"), app)
     assert job["status"] == "done"
-    assert job["result"] == {"text": "Merhaba!", "brain": "Groq · llama", "tools": [], "skipped": []}
+    assert job["result"] == {"text": "Merhaba!", "brain": "Groq · llama", "tools": [], "skipped": [],
+                             "files": []}
     assert app.history()[-2:] == [{"role": "user", "content": "Selam"}, {"role": "assistant", "content": "Merhaba!"}]
 
 
@@ -201,3 +202,115 @@ def test_approvals_and_rules_from_the_panel(home):
     assert app.state()["rules"] == []
     with pytest.raises(PanelError):
         app.delete_rule(rules[0]["id"])
+
+
+# ---------- OpenRouter's free models ----------
+def free_catalog(*models):
+    """An OpenRouter model list: (id, context, tools) for free text models, plus one paid model."""
+    data = [{"id": mid, "pricing": {"prompt": "0", "completion": "0"}, "context_length": context,
+             "architecture": {"input_modalities": ["text"], "output_modalities": ["text"]},
+             "supported_parameters": ["tools"] if tools else []} for mid, context, tools in models]
+    data.append({"id": "openai/gpt-5", "pricing": {"prompt": "0.00001", "completion": "0.00001"},
+                 "context_length": 400000, "supported_parameters": ["tools"],
+                 "architecture": {"input_modalities": ["text"], "output_modalities": ["text"]}})
+    return ("GET", "openrouter.ai/api/v1/models", response({"data": data}))
+
+
+ULTRA = ("nvidia/nemotron-3-ultra-550b-a55b:free", 1000000, True)
+INKLING = ("thinkingmachines/inkling:free", 1048576, True)
+GEMMA = ("google/gemma-4-31b-it:free", 262144, True)
+NO_TOOLS = ("liquid/lfm-2.5-2.6b:free", 65536, False)
+ROUTER = ("openrouter/free", 200000, True)
+
+
+def test_free_models_are_added_as_fallbacks_biggest_context_first(home):
+    app, _ = make_app(free_catalog(GEMMA, ULTRA, NO_TOOLS, INKLING, ROUTER))
+    app.config.keys["openrouter"] = "sk-or"
+    app.config.set_brains([BrainConfig("groq", PROVIDERS["groq"].base_url, "llama")])      # chosen by hand
+    result = app.sync_free_models(count=2, min_context=500000)
+    assert [b.model for b in app.config.brains()] == ["llama", INKLING[0], ULTRA[0], "openrouter/free"]
+    assert all(b.auto and b.free and b.native_tools for b in app.config.brains()[1:])
+    assert result["added"] == [INKLING[0], ULTRA[0], "openrouter/free"] and result["removed"] == []
+    assert cfg.load().free_sync["last"]
+
+
+def test_a_new_sync_replaces_models_that_are_no_longer_free(home):
+    app, web = make_app(free_catalog(ULTRA, INKLING, ROUTER))
+    app.config.keys["openrouter"] = "sk-or"
+    app.sync_free_models(count=2, min_context=0)
+    web.routes[0] = free_catalog(ULTRA, GEMMA, ROUTER)         # Inkling is gone, Gemma is new
+    result = app.sync_free_models(count=2, min_context=0)
+    assert [b.model for b in app.config.brains()] == [ULTRA[0], GEMMA[0], "openrouter/free"]
+    assert result["removed"] == [INKLING[0]] and result["added"] == [GEMMA[0]]
+
+
+def test_moving_an_automatic_brain_keeps_it_and_removing_one_keeps_it_out(home):
+    app, _ = make_app(free_catalog(ULTRA, INKLING, GEMMA))
+    app.config.keys["openrouter"] = "sk-or"
+    app.sync_free_models(count=3, min_context=0)
+    app.move_brain(1, -1)                                       # ULTRA to the top: now chosen by hand
+    assert app.config.brain.model == ULTRA[0] and not app.config.brain.auto
+    app.remove_brain(2)                                         # Gemma: do not bring it back
+    app.sync_free_models(count=3, min_context=0)
+    assert [b.model for b in app.config.brains()] == [ULTRA[0], INKLING[0]]
+
+
+def test_free_sync_needs_openrouter(home):
+    app, _ = make_app(free_catalog(ULTRA))
+    with pytest.raises(PanelError, match="OpenRouter"):
+        app.sync_free_models()
+
+
+def test_a_busy_free_model_is_still_added(home):
+    app, _ = make_app(free_catalog(ULTRA), ("POST", "/chat/completions", response({"error": "rate-limited upstream"}, 429)))
+    app.config.keys["openrouter"] = "sk-or"
+    app.models("openrouter")                                    # the panel listed the models first
+    added = app.add_brain("openrouter", ULTRA[0])
+    assert "busy" in added["warning"] and added["native_tools"] is True
+    assert app.config.brain.model == ULTRA[0]
+
+
+def test_openrouter_privacy_setting_problem_is_explained(home):
+    app, _ = make_app(("POST", "/chat/completions", response(
+        {"error": {"message": "No endpoints found matching your data policy (Free model publication)"}}, 404)))
+    app.config.keys["openrouter"] = "sk-or"
+    with pytest.raises(PanelError, match="settings/privacy"):
+        app.add_brain("openrouter", ULTRA[0])
+    failure = app.runtime.audit.recent()[-1]
+    assert failure["event"] == "brain_add_failed" and failure["model"] == ULTRA[0]
+
+
+# ---------- specialists ----------
+def test_specialists_are_chosen_in_the_panel(home):
+    app, _ = make_app()
+    app.set_specialist("image", "pollinations", "")
+    app.set_specialist("writer", "openrouter", "cohere/north-mini-code:free")
+    assert cfg.load().media["image"]["provider"] == "pollinations"
+    state = app.state()["specialists"]
+    assert state["image"]["provider"] == "pollinations" and state["writer"]["model"] == "cohere/north-mini-code:free"
+    assert "pollinations" in [s["id"] for s in state["services"]["image"]]
+    with pytest.raises(PanelError):
+        app.set_specialist("image", "no-such-service", "")
+    with pytest.raises(PanelError):
+        app.set_specialist("video", "pollinations", "")
+    app.set_specialist("image", "", "")                     # off again
+    assert not app.runtime.studio.ready("image")
+
+
+def test_a_pollinations_key_is_optional_and_kept_like_the_other_keys(home):
+    app, _ = make_app()
+    app.save_service_key("pollinations", " pk_free_key_123 ")
+    assert app.config.keys["pollinations"] == "pk_free_key_123"
+    assert app.state()["specialists"]["pollinations_key"] == "pk_f…_123"
+    app.save_service_key("pollinations", "")
+    assert "pollinations" not in app.config.keys
+
+
+def test_a_pasted_openrouter_key_is_really_checked(home):
+    # OpenRouter's model list answers any key, so the key itself is checked
+    app, web = make_app(("GET", "openrouter.ai/api/v1/key", response({"error": "No auth credentials found"}, 401)),
+                        free_catalog(ULTRA))
+    with pytest.raises(PanelError, match="rejected"):
+        app.save_key("openrouter", "sk-or-v1-typo")
+    assert "openrouter" not in app.config.keys
+    assert web.requests[0][1] == "https://openrouter.ai/api/v1/key"

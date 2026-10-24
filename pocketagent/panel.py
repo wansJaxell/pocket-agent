@@ -23,9 +23,15 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 from pocketagent.app import App, PanelError
+from pocketagent.media import MEDIA_TYPES
 from pocketagent.panel_page import render_page
 
 MAX_BODY = 1_000_000
+
+
+@dataclass
+class FileReply:
+    path: object         # a workspace file to send as it is
 
 
 @dataclass
@@ -49,12 +55,21 @@ ROUTES = {
     ("GET", "models"): lambda r: r.app.models(r.query.get("provider", "")),
     ("GET", "job"): lambda r: r.app.job(r.query.get("id", "")),
     ("GET", "history"): lambda r: r.app.history(),
+    ("GET", "file"): lambda r: FileReply(r.app.workspace_file(r.query.get("path", ""))),
+    ("GET", "specialist/models"): lambda r: r.app.specialist_models(r.query.get("kind", ""), r.query.get("provider", "")),
+    ("POST", "specialist"): lambda r: r.app.set_specialist(r.text("kind"), r.text("provider"), r.text("model"),
+                                                          r.text("voice")),
+    ("POST", "specialist/key"): lambda r: r.app.save_service_key(r.text("service"), r.text("key")),
+    ("POST", "specialist/try"): lambda r: r.app.try_specialist(r.text("kind")),
     ("POST", "key"): lambda r: r.app.save_key(r.text("provider"), r.text("key"), r.text("base_url")),
     ("POST", "brains/add"): lambda r: r.app.add_brain(r.text("provider"), r.text("model"), r.body.get("free") is not False),
     ("POST", "brains/move"): lambda r: r.app.move_brain(r.body.get("index"), r.body.get("delta", 0)),
     ("POST", "brains/remove"): lambda r: r.app.remove_brain(r.body.get("index")),
     ("POST", "brains/test"): lambda r: r.app.test_brain(r.body.get("index")),
     ("POST", "openrouter/start"): lambda r: {"url": r.app.openrouter_start(r.panel.callback_url)},
+    ("POST", "free/sync"): lambda r: r.app.sync_free_models(r.body.get("count"), r.body.get("min_context")),
+    ("POST", "free/settings"): lambda r: r.app.set_free_sync(r.body.get("enabled") is True, r.body.get("count"),
+                                                             r.body.get("min_context")),
     ("POST", "telegram"): lambda r: r.app.telegram_connect(r.text("token")),
     ("POST", "telegram/disconnect"): lambda r: r.app.telegram_disconnect(),
     ("POST", "identity"): lambda r: r.app.set_identity(r.text("name"), r.text("personality")),
@@ -130,6 +145,15 @@ class PanelServer:
             def _dispatch(self, method: str) -> None:
                 url = urlparse(self.path)
                 query = {k: v[0] for k, v in parse_qs(url.query).items()}
+                try:
+                    length = int(self.headers.get("Content-Length") or 0)
+                except ValueError:
+                    length = -1
+                if not 0 <= length <= MAX_BODY:
+                    self.close_connection = True
+                    return self._json(413, {"error": "Too large."})
+                # read the body before any answer: replying first makes Windows reset the connection
+                raw = self.rfile.read(length) if length else b""
                 origin = self.headers.get("Origin")
                 if self.headers.get("Host", "") not in panel.hosts or (origin and origin not in panel.origins):
                     return self._json(403, {"error": "This panel only answers to itself."})
@@ -155,11 +179,8 @@ class PanelServer:
                 if method == "POST":
                     if self.headers.get("Content-Type", "").split(";")[0].strip() != "application/json":
                         return self._json(415, {"error": "Send JSON."})
-                    length = int(self.headers.get("Content-Length") or 0)
-                    if length > MAX_BODY:
-                        return self._json(413, {"error": "Too large."})
                     try:
-                        body = json.loads(self.rfile.read(length) or b"{}")
+                        body = json.loads(raw or b"{}")
                     except (json.JSONDecodeError, UnicodeDecodeError):
                         body = None
                     if not isinstance(body, dict):
@@ -170,6 +191,8 @@ class PanelServer:
                     return self._json(400, {"error": str(error)})
                 except Exception as error:     # show the problem instead of a broken page
                     return self._json(500, {"error": f"{type(error).__name__}: {error}"})
+                if isinstance(result, FileReply):
+                    return self._file(result.path)
                 extra = []
                 if isinstance(result, dict) and "_session" in result:
                     new = result.pop("_session")
@@ -196,12 +219,21 @@ class PanelServer:
                               "default-src 'none'; frame-ancestors 'none'", extra)
                 self.wfile.write(raw)
 
+            def _file(self, path) -> None:
+                """Images and audio are shown; anything else is only offered as a download, never rendered."""
+                content_type = MEDIA_TYPES.get(path.suffix.lower())
+                raw = path.read_bytes()
+                disposition = "inline" if content_type else f'attachment; filename="{path.name}"'
+                self._headers(200, content_type or "application/octet-stream", len(raw),
+                              "default-src 'none'; sandbox", [("Content-Disposition", disposition)])
+                self.wfile.write(raw)
+
             def _html(self, status: int, page: str, nonce: str = "") -> None:
                 raw = page.encode("utf-8")
                 scripts = f"'nonce-{nonce}'" if nonce else "'none'"
                 self._headers(status, "text/html; charset=utf-8", len(raw),
                               f"default-src 'none'; script-src {scripts}; style-src {scripts}; "
-                              "connect-src 'self'; img-src 'self' data:; base-uri 'none'; "
+                              "connect-src 'self'; img-src 'self' data: blob:; media-src blob:; base-uri 'none'; "
                               "form-action 'none'; frame-ancestors 'none'")
                 self.wfile.write(raw)
 

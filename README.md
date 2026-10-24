@@ -9,11 +9,15 @@ or from Telegram on any phone. It can use your computer too, but only what you a
 - **One file to start:** download `PocketAgent.exe`, double-click, and the setup panel opens in your browser
 - **Free brains, with fallbacks:** OpenRouter (sign in, no key to copy), Groq, Google AI Studio, NVIDIA,
   GitHub Models, Cerebras, Ollama, LM Studio, or any OpenAI-compatible API. If one runs out of free
-  credit, the next one answers, and every answer says which brain wrote it
+  credit, the next one answers, and every answer says which brain wrote it. OpenRouter's free models
+  (several with 1M-token context) can be added and kept up to date automatically
+- **Specialists:** the agent writes a prompt and hands it to an image, speech or writing model; the
+  picture, audio or file comes back in the chat and on Telegram
 - **Its own memory:** name, personality, notes and a decision log that stay the same whichever brain you use
 - **Your keys, encrypted if you want:** lock the panel with a password and the API keys are stored encrypted
 - **Computer use with approvals:** off by default; when on, every action needs your OK, and one button stops everything
-- **Tiny:** one dependency (`requests`), a single executable, 171 tests on Windows, macOS and Linux
+- **English or Turkish** interface (English by default)
+- **Tiny:** one dependency (`requests`), a single executable, 198 tests on Windows, macOS and Linux
 
 ![Telegram chat](docs/telegram.png)
 
@@ -25,6 +29,7 @@ flowchart LR
     A <--> R["Brain chain<br/>1st choice → next free one on 402/403/429"]
     A <--> S["Skills<br/>time · calculator · files · web · notes · decisions · reminders · yours"]
     A --> G{"Approval engine"} --> O["Computer<br/>shell · browser"]
+    A --> X["Specialists<br/>image · speech · writer"]
     A --> M[("Local memory<br/>identity · notes · decisions · history")]
     G --> L[("Audit log")]
 ```
@@ -68,18 +73,20 @@ Run PocketAgent on a computer and chat with it through **Telegram**, which works
 
 ## The setup panel
 
-The panel is one page that only your own computer can open. Its four steps:
+The panel is one page that only your own computer can open. Its steps:
 
 1. **Connect a brain.** Pick a provider. OpenRouter signs you in from the browser (OAuth PKCE): no key
    to copy. For the others, **Get your free key** opens the right page; paste the key, and the panel
-   checks it and lists the models. Add as many brains as you like and put them in order.
+   checks it and lists the models in a table you can search and filter (free only, minimum context,
+   tool calling). Add as many brains as you like and put them in order.
 2. **Connect Telegram** (optional). Create a bot with @BotFather, paste its token, then press START
    in your bot. The first person who presses START becomes the owner; everyone else is refused.
 3. **Name your agent**, and optionally describe its personality.
 4. **Access:** *open* (no password) or *locked* (a password, and the keys are stored encrypted).
+5. **Specialists** (optional): who makes images, speech and long texts (see below).
 
-The panel also has the chat, a **Safety** tab (computer use, approval rules, jobs, audit log), a
-TR/EN language switch and the **STOP** button.
+The panel also has the chat, a **Safety** tab (computer use, approval rules, jobs, audit log), an
+EN/TR language switch (English until you pick Türkçe) and the **STOP** button.
 
 ## Choosing a brain
 
@@ -96,9 +103,20 @@ TR/EN language switch and the **STOP** button.
 | Custom | | any OpenAI-compatible address, e.g. `http://192.168.1.5:11434/v1` |
 
 **Fallbacks.** The first brain in your list answers. If it answers HTTP 402 (out of credit),
-403 (refused) or 429 (rate-limited), the next *free* brain in your list answers instead; paid models
-are never used as fallbacks. Other errors (a wrong key, a missing model) are shown, not hidden.
+403 (refused), 404 (model gone), 408, 429 (rate-limited) or 5xx (down), the next *free* brain in your
+list answers instead; paid models are never used as fallbacks. A wrong key (401) or a bad request
+(400) is shown, not hidden. If every brain fails, the error lists what happened to each one.
 Under each answer you see the brain that wrote it, e.g. `🧠 Gemini · gemini-2.5-flash (↪ Groq · llama-3.3-70b-versatile: HTTP 429)`.
+
+**OpenRouter's free models, automatically.** In the OpenRouter part of step 1, **Add / update now**
+puts OpenRouter's free models that support tool calling behind your own brains, biggest context
+first (e.g. 1M-token Nemotron 3 Ultra, Inkling), with `openrouter/free` (OpenRouter's own router over
+its free models) last. Choose how many and the minimum context. Free models come and go, so tick
+**Keep it current** to refresh the list every 12 hours. A model you move by hand stays where you put
+it; one you remove is not added again. They are tagged 🔄 in the list.
+
+If OpenRouter answers *"No endpoints found matching your data policy"*, its privacy settings block
+free models: allow them at [openrouter.ai/settings/privacy](https://openrouter.ai/settings/privacy).
 
 **Which local model fits your computer?**
 
@@ -111,6 +129,26 @@ Under each answer you see the brain that wrote it, e.g. `🧠 Gemini · gemini-2
 ### Use your PC's model from other devices
 Let Ollama listen on your network (`OLLAMA_HOST=0.0.0.0`, then restart Ollama), and on the
 other device choose **Custom** with `http://<your-pc-ip>:11434/v1`.
+
+## Specialists: images, speech, writing
+
+One agent stays in charge. When you ask for a picture, a voice recording or a long program or
+document, the agent writes a detailed prompt and hands it to a specialist: one call, prompt in,
+result out. The result is saved in the workspace's `media` folder (or the path the agent chose),
+shown in the panel's chat and sent on Telegram. Choose the specialists in step 5; all are off until
+you pick one, because what you send them leaves your computer.
+
+| Specialist | Services | |
+|---|---|---|
+| 🖼 Images (`create_image`) | [Pollinations](https://pollinations.ai) | free; works **without a key** (classic model, rate-limited); a free key from [enter.pollinations.ai](https://enter.pollinations.ai/keys) unlocks models such as FLUX schnell |
+| | OpenRouter image models | **paid** (OpenRouter has no free image model): every image asks for your approval, like any spending |
+| | your own OpenAI-compatible server | `/v1/images/generations` |
+| 🔊 Speech (`create_speech`) | Pollinations | free, needs the free Pollinations key |
+| | this computer's voices | free and offline (Windows speech voices, macOS `say`) |
+| | your own OpenAI-compatible server | `/v1/audio/speech` |
+| ✍️ Writing / code (`ask_specialist`) | any of your brains | e.g. a coding model for long code; can save the result as a file |
+
+Video generation has no free option today, so it is not included.
 
 ## Memory that belongs to the agent
 
@@ -160,6 +198,7 @@ answered one after another, while approvals and STOP are handled at once.
 | notes | `remember`, `recall`, `forget` |
 | decisions | `record_decision`, `list_decisions` |
 | reminders | `set_reminder`, `list_reminders`, `cancel_reminder` (delivered on Telegram or in the panel) |
+| specialists | `create_image`, `create_speech`, `ask_specialist` (see *Specialists*) |
 | shell | `run_command`: PowerShell on Windows, `sh` elsewhere (computer use, approval for every command) |
 | browser | `open_in_browser`: opens a page in your own browser (computer use, approval per site) |
 
@@ -227,6 +266,9 @@ can type the password.
 - **Telegram is owner-only.** The first person to press START during setup becomes the owner; every
   other chat is refused and never reaches the model, and their buttons do nothing.
 - **Computer use** is off until you turn it on, and then every action needs your approval (see above).
+- **Specialists** are off until you choose them; paid ones ask for approval every time. Files they
+  make are only served from the workspace, and the panel shows images and audio but never renders
+  other files as pages.
 - **File tools are sandboxed** to the workspace folder; paths like `../../Windows` are rejected.
 - **Web pages, files and command output are untrusted:** the model is told not to follow instructions
   inside them, and any action after reading them needs a fresh approval.
@@ -237,12 +279,12 @@ can type the password.
 
 ```bash
 pip install -e ".[dev]"
-pytest                                   # 171 tests, no network, model, Telegram or OS calls
+pytest                                   # 198 tests, no network, model, Telegram or OS calls
 pyinstaller --onefile --name PocketAgent --collect-submodules pocketagent.skills pocketagent/__main__.py
 ```
 
 Tests replace the model servers, Telegram, the browser and the operating system with small fakes,
-so they are fast and repeatable. Pushing a tag such as `v0.2.0` builds Windows, macOS and Linux
+so they are fast and repeatable. Pushing a tag such as `v0.3.0` builds Windows, macOS and Linux
 executables with GitHub Actions and attaches them to a release.
 
 ## Roadmap

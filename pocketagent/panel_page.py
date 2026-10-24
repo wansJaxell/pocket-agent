@@ -93,6 +93,23 @@ background:var(--card);border:1px solid var(--line);border-radius:8px;padding:8p
 .list li{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;border-bottom:1px solid var(--line);padding:6px 0}
 .list .what{flex:1 1 300px;overflow-wrap:anywhere;font-family:ui-monospace,Consolas,monospace;font-size:13px}
 .list .when{color:var(--muted);font-size:12.5px;white-space:nowrap}
+.picker{max-height:380px;overflow:auto;border:1px solid var(--line);border-radius:10px;margin:8px 0}
+.picker table{width:100%;border-collapse:collapse;font-size:13.5px}
+.picker th{position:sticky;top:0;background:var(--card);text-align:left;font-weight:600;padding:6px 8px;
+border-bottom:1px solid var(--line)}
+.picker td{padding:5px 8px;border-bottom:1px solid var(--line);vertical-align:middle}
+.picker td.mid{overflow-wrap:anywhere;font-family:ui-monospace,Consolas,monospace;font-size:13px}
+.picker td.mid .tag{margin-left:6px;font-family:system-ui,sans-serif}
+.subcard{border:1px dashed var(--line);border-radius:10px;padding:10px 14px;margin-top:14px}
+.subcard h3{margin-top:4px}
+input.narrow{width:76px}
+label.inline{display:inline-flex;gap:6px;align-items:center}
+.sp-row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;border-bottom:1px solid var(--line);padding:10px 0}
+.sp-kind{min-width:140px}
+.sp-row select{max-width:100%}
+.try-result{flex-basis:100%}
+img.shot{max-width:min(100%,420px);border-radius:10px;display:block;margin-top:8px;border:1px solid var(--line)}
+audio{display:block;margin-top:8px;max-width:100%}
 label.choice{display:flex;gap:8px;align-items:center;border:1px solid var(--line);border-radius:10px;padding:8px 12px;cursor:pointer}
 label.choice input{margin:0}
 textarea.wide{width:100%;min-height:70px;resize:vertical}
@@ -163,6 +180,11 @@ textarea.wide{width:100%;min-height:70px;resize:vertical}
         <input id="pw2" class="grow" type="password" autocomplete="new-password" data-ph="access.pw2">
       </div>
       <div class="row"><button class="btn primary" id="save-access" data-t="save"></button></div>
+    </article>
+    <article class="card" id="step-specialists">
+      <h2><span class="num">5</span><span data-t="step.specialists"></span><span class="tag" data-t="optional"></span></h2>
+      <p class="hint" data-t="sp.intro"></p>
+      <div id="specialists"></div>
     </article>
     <article class="card" id="step-more">
       <h2><span class="num">+</span><span data-t="step.more"></span></h2>
@@ -249,6 +271,25 @@ en: {
  "auto.hint": "Adds a shortcut to your Startup folder. The agent window stays visible on the taskbar.",
  "auto.unsupported": "Only available on Windows.",
  "memory.line": "Memory (stays the same whichever brain answers): {notes} notes, {decisions} decisions.",
+ "pick.search": "Search models…", "pick.free": "only free", "pick.tools": "only with tool calling",
+ "pick.any": "any context", "pick.more": "{n} more: narrow the search.", "pick.none": "No model matches.",
+ "pick.manual": "…or type a model name:", "pick.col_model": "Model", "pick.col_ctx": "Context",
+ "pick.col_tools": "Tools", "pick.col_in": "Input", "pick.add": "Add",
+ "brain.auto": "auto", "brain.busy_added": "The model is busy right now, but it was added: it answers when it can.",
+ "free.title": "Add OpenRouter's free models automatically",
+ "free.hint": "Adds the free models that can use tools, biggest context first, behind your own brains as fallbacks; openrouter/free goes last. Free models come and go, so keep the list current. A model you move by hand stays; one you remove is not added again.",
+ "free.count": "How many", "free.min": "Minimum context", "free.now": "Add / update now",
+ "free.auto": "Keep it current (every 12 hours)", "free.last": "Last update:", "free.done": "{added} added, {removed} removed.",
+ "step.specialists": "Specialists: images, speech, writing",
+ "sp.intro": "Your agent writes the prompt; a specialist model makes the result. Files are saved in the workspace's media folder and appear in the chat and on Telegram. What you send to these services leaves your computer.",
+ "sp.image": "🖼 Images", "sp.speech": "🔊 Speech", "sp.writer": "✍️ Writing / code", "sp.off": "Off",
+ "sp.model": "Model", "sp.default": "(default model)", "sp.voice": "Voice, e.g. nova", "sp.try": "Try",
+ "sp.paid": "paid: asks every time", "sp.key": "Pollinations key (optional, free)", "sp.getkey": "Get a free key ↗",
+ "sp.nokey": "Without a key, images come from Pollinations' classic model (slower) and speech is not available. A free key unlocks both and more models.",
+ "sp.writer_hint": "The writer is one of your brains, e.g. a coding model for long code or documents.",
+ "svc.pollinations": "Pollinations (free)", "svc.pollinations_key": "Pollinations (free key needed)",
+ "svc.openrouter": "OpenRouter image models",
+ "svc.custom": "Your own server (OpenAI-compatible)", "svc.local": "This computer's voices (offline)",
  "stop": "STOP", "stop.done": "Stopped everything. Computer use is off.", "tab.safety": "Safety",
  "cu.title": "Computer use", "cu.off": "OFF: safe mode, chat only. Nothing runs on this computer.",
  "cu.on": "ON: the agent may run commands and open web pages, and you approve every action.",
@@ -305,6 +346,26 @@ tr: {
  "auto.hint": "Başlangıç klasörüne bir kısayol ekler. Ajan penceresi görev çubuğunda görünür kalır.",
  "auto.unsupported": "Sadece Windows'ta kullanılabilir.",
  "memory.line": "Hafıza (hangi beyin cevap verirse versin aynı kalır): {notes} not, {decisions} karar.",
+ "pick.search": "Model ara…", "pick.free": "sadece ücretsiz", "pick.tools": "sadece araç kullanabilenler",
+ "pick.any": "her bağlam", "pick.more": "{n} model daha: aramayı daralt.", "pick.none": "Eşleşen model yok.",
+ "pick.manual": "…ya da model adını yaz:", "pick.col_model": "Model", "pick.col_ctx": "Bağlam",
+ "pick.col_tools": "Araç", "pick.col_in": "Girdi", "pick.add": "Ekle",
+ "brain.auto": "otomatik", "brain.busy_added": "Model şu an meşgul ama eklendi: boşaldığında cevap verir.",
+ "free.title": "OpenRouter'ın ücretsiz modellerini otomatik ekle",
+ "free.hint": "Araç kullanabilen ücretsiz modelleri, en büyük bağlam önce, kendi beyinlerinin arkasına yedek olarak ekler; openrouter/free en sona gelir. Ücretsiz modeller gelip gider, listeyi güncel tut. Elle taşıdığın model kalır; çıkardığın model yeniden eklenmez.",
+ "free.count": "Kaç model", "free.min": "En az bağlam", "free.now": "Şimdi ekle / güncelle",
+ "free.auto": "Güncel tut (12 saatte bir)", "free.last": "Son güncelleme:", "free.done": "{added} eklendi, {removed} çıkarıldı.",
+ "step.specialists": "Uzmanlar: görsel, ses, yazı",
+ "sp.intro": "Ajanın istemi yazar, uzman model sonucu üretir. Dosyalar çalışma klasöründeki media klasörüne kaydedilir; sohbette ve Telegram'da görünür. Bu servislere gönderdiklerin bilgisayarından çıkar.",
+ "sp.image": "🖼 Görsel", "sp.speech": "🔊 Ses", "sp.writer": "✍️ Yazı / kod", "sp.off": "Kapalı",
+ "sp.model": "Model", "sp.default": "(varsayılan model)", "sp.voice": "Ses, ör. nova", "sp.try": "Dene",
+ "sp.paid": "ücretli: her seferinde sorar", "sp.key": "Pollinations anahtarı (isteğe bağlı, ücretsiz)",
+ "sp.getkey": "Ücretsiz anahtar al ↗",
+ "sp.nokey": "Anahtarsız görseller Pollinations'ın klasik modelinden gelir (daha yavaş), ses ise kullanılamaz. Ücretsiz anahtar ikisini ve daha fazla modeli açar.",
+ "sp.writer_hint": "Yazar, beyinlerinden biridir; ör. uzun kod ya da belgeler için bir kod modeli.",
+ "svc.pollinations": "Pollinations (ücretsiz)", "svc.pollinations_key": "Pollinations (ücretsiz anahtar gerekir)",
+ "svc.openrouter": "OpenRouter görsel modelleri",
+ "svc.custom": "Kendi sunucun (OpenAI uyumlu)", "svc.local": "Bu bilgisayarın sesleri (çevrimdışı)",
  "stop": "DURDUR", "stop.done": "Her şey durduruldu. Bilgisayar kullanımı kapalı.", "tab.safety": "Güvenlik",
  "cu.title": "Bilgisayar kullanımı", "cu.off": "KAPALI: güvenli mod, sadece sohbet. Bu bilgisayarda hiçbir şey çalışmaz.",
  "cu.on": "AÇIK: ajan komut çalıştırabilir ve web sayfası açabilir; her eylemi sen onaylarsın.",
@@ -319,7 +380,7 @@ tr: {
  "class.money": "para harcama", "class.delete": "dosya silme", "class.message": "mesaj gönderme",
  "class.secrets": "şifre/anahtar", "class.untrusted": "web/dosya içeriğinden sonra"
 }};
-let lang = document.documentElement.lang || (navigator.language.toLowerCase().startsWith("tr") ? "tr" : "en");
+let lang = document.documentElement.lang || "en";        // English unless the user picks Türkçe
 let S = null, selected = null, tab = null, models = {}, local = null;
 const shown = {};                       // last rendered data per section: re-render only on change
 const t = k => (T[lang] && T[lang][k]) || T.en[k] || k;
@@ -468,6 +529,25 @@ async function renderDetail() {
   if (selected === p.id) renderModelChooser(p);
 }
 
+const pick = {q: "", free: true, tools: false, ctx: 0};       // the model table's filters
+const CONTEXTS = [0, 128000, 256000, 1000000];
+
+function fmtCtx(n) {
+  if (!n) return "?";
+  return n >= 1e6 ? +(n / 1e6).toFixed(1) + "M" : Math.round(n / 1000) + "K";
+}
+
+function checkbox(label, value, onchange) {
+  const box = h("input", {type: "checkbox", checked: value, onchange: () => onchange(box.checked)});
+  return h("label", {class: "inline"}, box, label);
+}
+
+function contextSelect(value, onchange) {
+  const select = h("select", {"aria-label": t("pick.col_ctx"), onchange: () => onchange(+select.value)},
+    CONTEXTS.map(v => h("option", {value: v, selected: v === value}, v ? fmtCtx(v) + "+" : t("pick.any"))));
+  return select;
+}
+
 function renderModelChooser(p) {
   const box = $("model-box");
   if (!box) return;
@@ -476,20 +556,72 @@ function renderModelChooser(p) {
   const list = models[p.id] || [];
   if (p.local && !list.length)
     return fill(box, h("div", {class: "note warn", text: local && local[p.id] ? t("brain.local_empty") : t("brain.local_none")}));
-  const options = h("datalist", {id: "model-options"}, list.map(m => h("option", {value: m.id},
-    m.id + (p.id === "openrouter" ? (m.free ? " · " + t("brain.free") : " · $") : ""))));
-  const first = list.find(m => m.free) || list[0];
-  const input = h("input", {class: "grow", list: "model-options", placeholder: t("brain.model_ph"),
-                            value: (first && first.id) || p.suggested_model || "", autocomplete: "off",
-                            "aria-label": t("brain.model")});
-  const add = h("button", {class: "btn primary", type: "button", text: t("brain.add"), onclick: () => act(add, async () => {
+  const problem = h("div", {class: "note bad", hidden: true});         // stays until the next try
+  const add = (button, id, free) => act(button, async () => {
+    problem.hidden = true;
     toast(t("brain.testing"));
-    const chosen = list.find(m => m.id === input.value.trim());
-    await api("brains/add", {provider: p.id, model: input.value, free: chosen ? chosen.free : true});
-    toast(t("brain.added"));
+    try {
+      const added = await api("brains/add", {provider: p.id, model: id, free});
+      toast(added.warning ? t("brain.busy_added") : t("brain.added"));
+      await refresh();
+    } catch (error) {
+      problem.hidden = false;
+      problem.textContent = id + ": " + error.message;
+      throw error;
+    }
+  });
+  const table = h("div", {class: "picker"});
+  const draw = () => {
+    const q = pick.q.toLowerCase();
+    const rows = list.filter(m => (!q || m.id.toLowerCase().includes(q)) && (!pick.free || p.id !== "openrouter" || m.free)
+      && (!pick.tools || m.tools) && (!pick.ctx || (m.context || 0) >= pick.ctx));
+    const shown = rows.slice(0, 80);
+    const head = ["pick.col_model", "pick.col_ctx", "pick.col_tools", "pick.col_in", ""].map(k => h("th", {text: k ? t(k) : ""}));
+    fill(table, rows.length ? h("table", {}, h("thead", {}, h("tr", {}, head)), h("tbody", {}, shown.map(m => {
+      const button = h("button", {class: "btn small", type: "button", text: t("pick.add"), onclick: () => add(button, m.id, m.free)});
+      return h("tr", {},
+        h("td", {class: "mid"}, m.id, p.id === "openrouter" ? h("span", {class: "tag" + (m.free ? " free" : ""), text: m.free ? t("brain.free") : "$"}) : null),
+        h("td", {text: fmtCtx(m.context)}),
+        h("td", {text: m.tools === true ? "✓" : m.tools === false ? "–" : "?"}),
+        h("td", {text: (m.input || []).join(", ")}),
+        h("td", {}, button));
+    }))) : h("p", {class: "hint", text: t("pick.none")}),
+    rows.length > shown.length ? h("p", {class: "hint", text: t("pick.more").replace("{n}", rows.length - shown.length)}) : null);
+  };
+  const search = h("input", {class: "grow", type: "search", placeholder: t("pick.search"), value: pick.q,
+                             "aria-label": t("pick.search"), oninput: () => { pick.q = search.value; draw(); }});
+  const manual = h("input", {class: "grow", placeholder: p.suggested_model || t("brain.model_ph"), autocomplete: "off",
+                             "aria-label": t("brain.model")});
+  const addManual = h("button", {class: "btn", type: "button", text: t("brain.add"), onclick: () => add(addManual, manual.value.trim(), true)});
+  fill(box,
+    list.length ? h("div", {class: "row"}, search, contextSelect(pick.ctx, v => { pick.ctx = v; draw(); }),
+      p.id === "openrouter" ? checkbox(t("pick.free"), pick.free, v => { pick.free = v; draw(); }) : null,
+      checkbox(t("pick.tools"), pick.tools, v => { pick.tools = v; draw(); })) : null,
+    list.length ? table : null,
+    h("p", {class: "hint", text: t("pick.manual")}), h("div", {class: "row"}, manual, addManual), problem,
+    p.id === "openrouter" ? freeSyncBox() : null);
+  if (list.length) draw();
+}
+
+function freeSyncBox() {
+  const settings = S.free_sync;
+  const count = h("input", {class: "narrow", type: "number", min: 0, max: 20, value: settings.count, "aria-label": t("free.count")});
+  let minimum = settings.min_context;
+  const now = h("button", {class: "btn primary", type: "button", text: t("free.now"), onclick: () => act(now, async () => {
+    const result = await api("free/sync", {count: +count.value, min_context: minimum});
+    toast(t("free.done").replace("{added}", result.added.length).replace("{removed}", result.removed.length));
     await refresh();
   })});
-  fill(box, h("div", {class: "row"}, h("b", {text: t("brain.model")}), input, options, add));
+  const keep = checkbox(t("free.auto"), settings.enabled, enabled => act(null, async () => {
+    await api("free/settings", {enabled, count: +count.value, min_context: minimum});
+    await refresh();
+  }));
+  return h("div", {class: "subcard"},
+    h("h3", {text: "🔄 " + t("free.title")}), h("p", {class: "hint", text: t("free.hint")}),
+    h("div", {class: "row"}, h("label", {class: "inline"}, t("free.count"), count),
+      h("label", {class: "inline"}, t("free.min"), contextSelect(minimum, v => { minimum = v; })), now),
+    h("div", {class: "row"}, keep),
+    settings.last ? h("p", {class: "hint", text: t("free.last") + " " + settings.last.replace("T", " ")}) : null);
 }
 
 function renderBrains() {
@@ -506,6 +638,7 @@ function renderBrains() {
       h("span", {class: "label", text: b.label}),
       h("span", {class: "tag" + (b.free ? " free" : ""), text: b.free ? t("brain.free") : t("brain.paid")}),
       b.native_tools ? null : h("span", {class: "tag", text: t("brain.texttools")}),
+      b.auto ? h("span", {class: "tag", text: "🔄 " + t("brain.auto")}) : null,
       move(-1, "↑"), move(1, "↓"), test,
       h("button", {class: "btn small", type: "button", text: "✕", "aria-label": "remove",
                    onclick: () => act(null, async () => { await api("brains/remove", {index: i}); await refresh(); })}));
@@ -548,6 +681,98 @@ function renderName() {
   if (!changed("name", S.identity)) return;
   if (document.activeElement !== $("name")) $("name").value = S.identity.name;
   if (document.activeElement !== $("personality")) $("personality").value = S.identity.personality || "";
+}
+
+// ---------- step 5: specialists ----------
+const specialistModels = {};      // "image|pollinations" -> the service's model list
+
+function specialistRow(kind, saved) {
+  const current = saved[kind] || {};
+  const service = h("select", {"aria-label": t("sp." + kind)}, h("option", {value: ""}, t("sp.off")));
+  if (kind === "writer") {
+    S.brains.forEach(b => service.append(h("option", {value: b.provider + "|" + b.model,
+      selected: current.provider === b.provider && current.model === b.model}, b.label)));
+  } else {
+    saved.services[kind].forEach(x => service.append(h("option", {value: x.id, selected: current.provider === x.id},
+      t(kind === "speech" && x.id === "pollinations" ? "svc.pollinations_key" : "svc." + x.id)
+        + (x.paid ? " · " + t("sp.paid") : ""))));
+  }
+  const model = h("select", {"aria-label": t("sp.model")});
+  const typed = h("input", {class: "grow", placeholder: t("sp.model"), value: current.model || "", "aria-label": t("sp.model")});
+  const voice = h("input", {placeholder: t("sp.voice"), value: current.voice || "", "aria-label": t("sp.voice")});
+  const result = h("div", {class: "try-result"});
+  const listed = id => id && kind !== "writer" && id !== "custom" && id !== "local";
+  const layout = () => {
+    model.hidden = !listed(service.value);
+    typed.hidden = service.value !== "custom";
+    voice.hidden = kind !== "speech" || !service.value;
+  };
+  const loadModels = async () => {
+    fill(model, h("option", {value: ""}, t("sp.default")));
+    if (!listed(service.value)) return;
+    const cacheKey = kind + "|" + service.value;
+    if (!specialistModels[cacheKey])
+      specialistModels[cacheKey] = (await api("specialist/models?kind=" + kind + "&provider=" + service.value)
+        .catch(() => ({models: []}))).models;
+    specialistModels[cacheKey].forEach(m => model.append(h("option", {value: m.id, selected: m.id === current.model}, m.label)));
+  };
+  service.addEventListener("change", () => { layout(); loadModels(); });
+  const save = h("button", {class: "btn primary", type: "button", text: t("save"), onclick: () => act(save, async () => {
+    let provider = service.value, chosen = provider === "custom" ? typed.value : model.value;
+    if (kind === "writer" && provider) {
+      const split = provider.indexOf("|");
+      [provider, chosen] = [provider.slice(0, split), provider.slice(split + 1)];
+    }
+    await api("specialist", {kind, provider, model: chosen, voice: voice.value});
+    toast(t("saved"));
+    await refresh();
+  })});
+  const tryIt = h("button", {class: "btn", type: "button", text: t("sp.try"), onclick: () => act(tryIt, async () => {
+    fill(result, h("p", {class: "hint", text: "…"}));
+    const outcome = await api("specialist/try", {kind});
+    fill(result, outcome.text ? h("p", {text: outcome.text}) : null);
+    for (const path of outcome.files) await attach(result, path);
+  })});
+  layout();
+  loadModels();
+  return h("div", {class: "sp-row"}, h("b", {class: "sp-kind", text: t("sp." + kind)}), service, model, typed, voice, save,
+    current.provider ? tryIt : null, result,
+    kind === "writer" ? h("p", {class: "hint", text: t("sp.writer_hint")}) : null);
+}
+
+function renderSpecialists() {
+  const saved = S.specialists;
+  if (!changed("specialists", [saved, S.brains.map(b => b.label)])) return;
+  const key = h("input", {class: "grow", type: "password", placeholder: t("sp.key"), autocomplete: "off", "aria-label": t("sp.key")});
+  const saveKey = h("button", {class: "btn", type: "button", text: t("save"), onclick: () => act(saveKey, async () => {
+    await api("specialist/key", {service: "pollinations", key: key.value});
+    for (const cached in specialistModels) delete specialistModels[cached];
+    toast(t("saved"));
+    await refresh();
+  })});
+  fill($("specialists"), ["image", "speech", "writer"].map(kind => specialistRow(kind, saved)),
+    h("h3", {text: t("sp.key")}),
+    h("div", {class: "row"}, key, saveKey, h("a", {class: "linkbtn", href: "https://enter.pollinations.ai/keys",
+      target: "_blank", rel: "noopener noreferrer", text: t("sp.getkey")})),
+    h("p", {class: saved.pollinations_key ? "ok" : "hint",
+            text: saved.pollinations_key ? t("brain.saved") + " " + saved.pollinations_key : t("sp.nokey")}));
+}
+
+async function attach(container, path) {
+  const extension = path.split(".").pop().toLowerCase();
+  const kind = ["png", "jpg", "jpeg", "webp", "gif"].includes(extension) ? "image"
+    : ["mp3", "wav", "ogg", "aac", "flac", "aiff"].includes(extension) ? "audio" : "file";
+  const name = path.split("/").pop();
+  try {
+    const reply = await fetch("/api/file?path=" + encodeURIComponent(path), {headers: {"X-Pocket-Token": TOKEN}});
+    if (!reply.ok) throw new Error("HTTP " + reply.status);
+    const url = URL.createObjectURL(await reply.blob());
+    container.append(kind === "image" ? h("a", {href: url, download: name}, h("img", {class: "shot", src: url, alt: name}))
+      : kind === "audio" ? h("audio", {controls: true, src: url})
+      : h("a", {class: "linkbtn", href: url, download: name, text: "📎 " + name}));
+  } catch (error) {
+    container.append(h("p", {class: "hint", text: "📎 " + path + " (" + error.message + ")"}));
+  }
 }
 
 // ---------- step 4: access; more ----------
@@ -669,6 +894,7 @@ async function send(text) {
     waiting.className = "msg";
     if (job.status === "done") {
       waiting.textContent = job.result.text;
+      for (const path of job.result.files || []) await attach(waiting, path);
       const meta = metaOf(job.result);
       if (meta) waiting.append(h("div", {class: "meta", text: meta}));
     } else if (job.status === "cancelled") {
@@ -696,7 +922,8 @@ function render() {
   showLock(!!S.locked);
   if (S.locked) return fill($("approvals"));
   renderApprovals();
-  renderProviders(); renderBrains(); renderTelegram(); renderName(); renderAccess(); renderMore(); renderSafety();
+  renderProviders(); renderBrains(); renderTelegram(); renderName(); renderSpecialists(); renderAccess();
+  renderMore(); renderSafety();
   renderNotices();
 }
 
@@ -788,7 +1015,6 @@ $("reset").addEventListener("click", () => act($("reset"), async () => {
   applyLanguage();
   await refresh();
   if (!S) return;
-  if (!S.language) api("language", {language: lang}).catch(() => {});   // Telegram notices follow it
   setInterval(refresh, 2000);
 })();
 </script>
@@ -799,4 +1025,4 @@ $("reset").addEventListener("click", () => act($("reset"), async () => {
 
 def render_page(token: str, nonce: str, language: str) -> str:
     return (PAGE.replace("__TOKEN__", token).replace("__NONCE__", nonce)
-            .replace("__LANG__", language if language in ("en", "tr") else ""))
+            .replace("__LANG__", "tr" if language == "tr" else "en"))

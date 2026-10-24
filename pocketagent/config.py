@@ -54,6 +54,7 @@ class BrainConfig:
     api_key: str = ""           # old config files only: keys now live in Config.keys, one per provider
     native_tools: bool = True   # False: tools are described in the prompt instead
     free: bool = True           # only free brains are used as automatic fallbacks
+    auto: bool = False          # added by the free-model sync (replaced on the next sync)
 
 
 @dataclass
@@ -78,6 +79,11 @@ class Config:
     access: str = "open"            # "open": no password; "locked": keys encrypted with the panel password
     vault: dict | None = None       # the encrypted keys and token (locked mode only)
     computer_use: bool = False      # False = safe mode: chat only, nothing runs on the computer
+    free_sync: dict = field(default_factory=lambda: {   # OpenRouter's free models as automatic fallbacks
+        "enabled": False, "count": 5, "min_context": 128000, "last": "", "skip": []})
+    media: dict = field(default_factory=lambda: {       # specialists; all off until the user picks one
+        "image": {"provider": "", "model": ""}, "speech": {"provider": "", "model": "", "voice": ""},
+        "writer": {"provider": "", "model": ""}})
     approval_timeout: int = 600     # seconds to wait for a yes/no before refusing
 
     @property

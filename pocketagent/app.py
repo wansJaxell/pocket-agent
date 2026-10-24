@@ -19,11 +19,17 @@ from pocketagent.agent import Agent
 from pocketagent.approvals import ApprovalEngine, AuditLog, RuleStore
 from pocketagent.config import BrainConfig, Config, TelegramConfig
 from pocketagent.jobs import JobQueue
-from pocketagent.llm import PROVIDERS, Brain, BrainError, Router, brain_label, list_models, probe
+from pocketagent.llm import PROVIDERS, Brain, BrainError, Router, brain_label, check_key, list_models, probe
+from pocketagent import media
+from pocketagent.media import MediaError, Studio
 from pocketagent.memory import ConversationStore, DecisionLog, IdentityStore, NoteStore, ReminderStore
 from pocketagent.oauth import authorize_url, exchange_code, make_verifier
 from pocketagent.setup_wizard import TELEGRAM_API, detect_local_models, wait_for_owner
 from pocketagent.tools import ToolRegistry
+
+FREE_ROUTER = "openrouter/free"          # OpenRouter's own router over its free models: a last resort
+BUSY = {402, 408, 429, 500, 502, 503, 504}  # a listed model may still be added while it is busy
+SYNC_EVERY = 12 * 3600                    # seconds between automatic free-model syncs
 
 TELEGRAM_TOKEN = re.compile(r"^\d+:[A-Za-z0-9_-]+$")   # also keeps a pasted token from bending the API URL
 
@@ -46,10 +52,11 @@ class Runtime:
         self.audit = AuditLog(cfg.logs_dir(), echo=True)
         self.approvals = ApprovalEngine(self.rules, self.audit, enabled=lambda: config.computer_use,
                                         timeout=config.approval_timeout)
+        self.studio = Studio(config, http=http or requests)
         self.agent = Agent(config, brain or Router(config, http=http), self.registry, self.conversations,
                            self.notes, self.reminders, cfg.workspace_dir(),
                            identity=self.identity, decisions=self.decisions,
-                           approvals=self.approvals, audit=self.audit)
+                           approvals=self.approvals, audit=self.audit, studio=self.studio)
 
 
 def start_reminder_loop(runtime: Runtime, notify, stop: threading.Event) -> None:
@@ -85,6 +92,7 @@ class App:
         self.bot = None
         self._bot_stop: threading.Event | None = None
         self._verifier: str | None = None                 # OpenRouter login in progress
+        self._catalog: dict[str, dict[str, dict]] = {}    # provider -> model id -> what the list said
         self._services = threading.Event()
         self._stop = threading.Event()
         self.sessions: set[str] = set()                   # browsers that gave the panel password
@@ -114,9 +122,11 @@ class App:
             "brains": [self._brain(i, b) for i, b in enumerate(c.brains())],
             "telegram": self._telegram(),
             "access": c.access,
+            "free_sync": {k: v for k, v in c.free_sync.items() if k != "skip"},
             "autostart": {"supported": autostart.supported(), "enabled": autostart.is_enabled()},
             "setup": {"brain": c.brain_ready, "telegram": c.telegram_ready},
             "memory": {"notes": len(self.runtime.notes.all()), "decisions": len(self.runtime.decisions.all())},
+            "specialists": self._specialists(),
             "computer_use": c.computer_use,
             "approvals": self.runtime.approvals.waiting(),
             "rules": self.runtime.rules.all(),
@@ -139,7 +149,7 @@ class App:
     @staticmethod
     def _brain(index: int, b: BrainConfig) -> dict:
         return {"index": index, "provider": b.provider, "model": b.model, "label": brain_label(b),
-                "free": b.free, "native_tools": b.native_tools}
+                "free": b.free, "native_tools": b.native_tools, "auto": b.auto}
 
     def _telegram(self) -> dict:
         username = self.config.telegram.username or self._telegram_pending
@@ -165,7 +175,9 @@ class App:
         if provider != "custom" and not key:
             raise PanelError("Paste the key first.")
         try:
+            check_key(provider, key, self.http)
             models = list_models(provider, key, base_url, self.http)
+            self._catalog[provider] = {m["id"]: m for m in models}
         except BrainError as error:
             if error.status in (401, 403):
                 raise PanelError(f"{info.name} rejected this key ({error}).") from None
@@ -186,9 +198,11 @@ class App:
             raise PanelError(f"Save a key for {info.name} first.")
         base_url = self.config.custom_url if provider == "custom" else ""
         try:
-            return {"models": list_models(provider, self.config.keys.get(provider, ""), base_url, self.http)}
+            models = list_models(provider, self.config.keys.get(provider, ""), base_url, self.http)
         except BrainError as error:
             raise PanelError(f"Could not get the model list: {error}") from None
+        self._catalog[provider] = {m["id"]: m for m in models}
+        return {"models": models}
 
     def add_brain(self, provider: str, model: str, free: bool = True) -> dict:
         """Test a brain and add it at the end of the priority list."""
@@ -202,16 +216,23 @@ class App:
         if not base_url:
             raise PanelError("Enter the API address first.")
         brain = BrainConfig(provider, base_url, model, free=bool(free))
+        known, warning = self._catalog.get(provider, {}).get(model), ""
         try:
             answer, brain.native_tools = probe(self.config.with_key(brain),
                                                lambda c: Brain(c, http=self.http, retries=0))
         except Exception as error:
-            raise PanelError(f"{brain_label(brain)} did not answer: {error}") from None
+            status = getattr(error, "status", None)
+            if status not in BUSY or known is None:
+                self.runtime.audit.write("brain_add_failed", provider=provider, model=model, error=str(error))
+                raise PanelError(f"{brain_label(brain)} did not answer: {error}") from None
+            # free models are often busy; the provider listed this one, so keep it: fallbacks cover the busy times
+            answer, brain.native_tools = "", known.get("tools") is not False
+            warning = f"{brain_label(brain)} is busy right now (HTTP {status}); it was added and answers when it can."
         with self.lock:
             brains = [b for b in self.config.brains() if (b.provider, b.model) != (provider, model)]
             self.config.set_brains(brains + [brain])
             self.save()
-        return {**self._brain(len(brains), brain), "answer": answer}
+        return {**self._brain(len(brains), brain), "answer": answer, "warning": warning}
 
     def _brain_list(self, index) -> tuple[list[BrainConfig], int]:
         brains = self.config.brains()
@@ -227,6 +248,7 @@ class App:
         with self.lock:
             brains, index = self._brain_list(index)
             target = max(0, min(len(brains) - 1, index + (1 if int(delta) > 0 else -1)))
+            brains[index].auto = False          # placed by hand: the free-model sync keeps it
             brains.insert(target, brains.pop(index))
             self.config.set_brains(brains)
             self.save()
@@ -234,7 +256,9 @@ class App:
     def remove_brain(self, index) -> None:
         with self.lock:
             brains, index = self._brain_list(index)
-            brains.pop(index)
+            removed = brains.pop(index)
+            if removed.auto:                    # the free-model sync must not bring it back
+                self.config.free_sync.setdefault("skip", []).append(removed.model)
             self.config.set_brains(brains)
             self.save()
 
@@ -245,6 +269,144 @@ class App:
         except Exception as error:
             return {"ok": False, "message": f"{type(error).__name__}: {error}"}
         return {"ok": True, "message": answer, "native_tools": native}
+
+    def sync_free_models(self, count: int | None = None, min_context: int | None = None) -> dict:
+        """Put OpenRouter's best free models (tool calling, biggest context first) after the
+        user's own brains, as automatic fallbacks; the previous automatic ones are replaced."""
+        if "openrouter" not in self.config.keys:
+            raise PanelError("Connect OpenRouter first (step 1), then add its free models.")
+        settings = self.config.free_sync
+        count = settings.get("count", 5) if count is None else max(0, min(int(count), 20))
+        min_context = settings.get("min_context", 0) if min_context is None else max(0, int(min_context))
+        try:
+            models = list_models("openrouter", self.config.keys["openrouter"], http=self.http)
+        except BrainError as error:
+            raise PanelError(f"Could not get OpenRouter's model list: {error}") from None
+        self._catalog["openrouter"] = {m["id"]: m for m in models}
+        with self.lock:
+            manual = [b for b in self.config.brains() if not b.auto]
+            taken = {b.model for b in manual if b.provider == "openrouter"} | set(settings.get("skip", []))
+            usable = [m for m in models if m["free"] and m["tools"] and m["id"] not in taken
+                      and m["id"] != FREE_ROUTER and (m["context"] or 0) >= min_context]
+            usable.sort(key=lambda m: (-(m["context"] or 0), -(m["created"] or 0)))
+            chosen = [m["id"] for m in usable[:count]]
+            if FREE_ROUTER in self._catalog["openrouter"] and FREE_ROUTER not in taken:
+                chosen.append(FREE_ROUTER)
+            before = [b.model for b in self.config.brains() if b.auto]
+            base_url = PROVIDERS["openrouter"].base_url
+            self.config.set_brains(manual + [BrainConfig("openrouter", base_url, model_id, auto=True)
+                                             for model_id in chosen])
+            settings.update(count=count, min_context=min_context, last=datetime.now().isoformat(timespec="seconds"))
+            self.save()
+        result = {"added": [m for m in chosen if m not in before], "removed": [m for m in before if m not in chosen],
+                  "count": len(chosen)}
+        self.runtime.audit.write("free_models_synced", **result)
+        return result
+
+    def set_free_sync(self, enabled: bool, count=None, min_context=None) -> dict:
+        with self.lock:
+            settings = self.config.free_sync
+            settings["enabled"] = bool(enabled)
+            if count is not None:
+                settings["count"] = max(0, min(int(count), 20))
+            if min_context is not None:
+                settings["min_context"] = max(0, int(min_context))
+            self.save()
+        return {k: v for k, v in settings.items() if k != "skip"}
+
+    def _free_sync_due(self) -> bool:
+        settings = self.config.free_sync
+        if not settings.get("enabled") or self.locked or "openrouter" not in self.config.keys:
+            return False
+        try:
+            return (datetime.now() - datetime.fromisoformat(settings.get("last") or "")).total_seconds() > SYNC_EVERY
+        except ValueError:
+            return True
+
+    def _free_sync_loop(self) -> None:
+        while not self._stop.wait(5):
+            if self._free_sync_due():
+                try:
+                    result = self.sync_free_models()
+                    if result["added"] or result["removed"]:
+                        self.notice(f"Free OpenRouter models updated: +{len(result['added'])} −{len(result['removed'])}")
+                except PanelError as error:
+                    self.notice(str(error))
+            self._stop.wait(1800)
+
+    # ---------- specialists (image, speech, writer) ----------
+    def _specialists(self) -> dict:
+        key = self.config.keys.get("pollinations", "")
+        services = {kind: [{"id": sid, "label": s.label, "paid": s.paid, "key_url": s.key_url}
+                           for sid, s in table.items()] for kind, table in (("image", media.IMAGE),
+                                                                            ("speech", media.SPEECH))}
+        return {**{kind: dict(self.config.media.get(kind) or {}) for kind in ("image", "speech", "writer")},
+                "services": services, "pollinations_key": mask(key) if key else ""}
+
+    def set_specialist(self, kind: str, provider: str, model: str = "", voice: str = "") -> dict:
+        """Choose who makes images, speech or long texts; an empty provider switches it off."""
+        choices = {"image": media.IMAGE, "speech": media.SPEECH, "writer": PROVIDERS}.get(kind)
+        if choices is None:
+            raise PanelError(f"Unknown specialist '{kind}'.")
+        provider, model = (provider or "").strip(), (model or "").strip()
+        if provider and provider not in choices:
+            raise PanelError(f"Unknown service '{provider}'.")
+        if kind == "writer" and provider and not model:
+            raise PanelError("Choose the writer's model.")
+        with self.lock:
+            self.config.media[kind] = {"provider": provider, "model": model if provider else "",
+                                       **({"voice": (voice or "").strip()} if kind == "speech" else {})}
+            self.save()
+        self.runtime.audit.write("specialist", kind=kind, provider=provider, model=model)
+        return self._specialists()
+
+    def save_service_key(self, service: str, key: str) -> None:
+        if service != "pollinations":
+            raise PanelError(f"Unknown service '{service}'.")
+        with self.lock:
+            if (key or "").strip():
+                self.config.keys[service] = key.strip()
+            else:
+                self.config.keys.pop(service, None)
+            self.save()
+
+    def specialist_models(self, kind: str, provider: str) -> dict:
+        try:
+            return {"models": self.runtime.studio.models(kind, provider)}
+        except MediaError as error:
+            raise PanelError(str(error)) from None
+
+    def try_specialist(self, kind: str) -> dict:
+        """Make a small sample so the user sees the specialist works (paid services are not tried)."""
+        studio = self.runtime.studio
+        if not studio.ready(kind):
+            raise PanelError("Choose a service first.")
+        if studio.paid(kind):
+            raise PanelError("Paid services are not tried automatically: ask the agent, and approve the cost.")
+        from pocketagent.skills.specialists import save_media
+        from pocketagent.tools import ToolContext
+        ctx = ToolContext(workspace=cfg.workspace_dir())
+        try:
+            if kind == "image":
+                data, extension = studio.image("a small red apple on a wooden table, soft light", "512x512")
+                save_media(ctx, "image", data, extension)
+            elif kind == "speech":
+                data, extension = studio.speech("Hello! This is your PocketAgent speaking.")
+                save_media(ctx, "speech", data, extension)
+            else:
+                return {"text": studio.write("Reply with one short friendly sentence that says you are ready."),
+                        "files": []}
+        except MediaError as error:
+            raise PanelError(str(error)) from None
+        return {"text": "", "files": ctx.files}
+
+    def workspace_file(self, relative: str):
+        """A file inside the workspace, for the panel to show (nothing outside it)."""
+        root = cfg.workspace_dir().resolve()
+        target = (root / (relative or "")).resolve()
+        if root not in target.parents or not target.is_file():
+            raise PanelError("There is no such file in the workspace.")
+        return target
 
     def openrouter_start(self, callback_url: str) -> str:
         self._verifier = make_verifier()
@@ -420,7 +582,8 @@ class App:
 
     def _answer(self, chat_id: str, text: str) -> dict:
         answer = self.runtime.agent.run(chat_id, text, source="panel")
-        return {"text": answer.text, "brain": answer.brain, "tools": answer.tools, "skipped": answer.skipped}
+        return {"text": answer.text, "brain": answer.brain, "tools": answer.tools, "skipped": answer.skipped,
+                "files": answer.files}
 
     def job(self, job_id) -> dict:
         job = self.jobs.get(job_id)
@@ -483,6 +646,7 @@ class App:
             else:
                 self.notice(text)
         start_reminder_loop(self.runtime, notify, self._stop)
+        threading.Thread(target=self._free_sync_loop, daemon=True).start()
 
     def stop_services(self) -> None:
         self._stop.set()

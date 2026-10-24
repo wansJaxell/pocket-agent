@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 from conftest import call, say
 
+from pocketagent.agent import Answer
 from pocketagent.llm import Reply
 from pocketagent.telegram_bot import TelegramBot, split_message
 
@@ -14,12 +15,15 @@ class FakeTelegram:
     def __init__(self, updates=()):
         self.sent, self.updates = [], list(updates)
 
-    def post(self, url, json, timeout):
+    def post(self, url, json=None, timeout=None, data=None, files=None):
         method = url.rsplit("/", 1)[-1]
         if method == "getUpdates":
             result, self.updates = self.updates, []
             return SimpleNamespace(json=lambda: {"ok": True, "result": result})
-        self.sent.append((method, json))
+        if files:                                     # an upload: keep the field name and the bytes
+            self.sent.append((method, {**data, "files": {k: (v[0], v[1].read()) for k, v in files.items()}}))
+        else:
+            self.sent.append((method, json))
         return SimpleNamespace(json=lambda: {"ok": True})
 
     def messages_to(self, chat_id):
@@ -163,3 +167,17 @@ def test_rules_command_lists_saved_rules(make_runtime):
     runtime.approvals.rules.add(Action("shell", "x", {}, scope={"command": "git status", "folder": "C:/w"}))
     bot.handle(message(OWNER, "/kurallar"))
     assert "#1 shell" in http.messages_to(OWNER)[-1] and "git status" in http.messages_to(OWNER)[-1]
+
+
+def test_images_and_audio_made_for_the_answer_are_sent_as_files(make_runtime):
+    bot, http, _ = make_bot(make_runtime)
+    media = bot.agent.workspace / "media"
+    media.mkdir(parents=True)
+    (media / "image-1.png").write_bytes(b"png-bytes")
+    (media / "speech-1.mp3").write_bytes(b"mp3-bytes")
+    bot.agent.run = lambda chat_id, text, source="": Answer("Here you go.", files=["media/image-1.png",
+                                                                                    "media/speech-1.mp3"])
+    bot.handle(message(OWNER, "draw and say it"))
+    uploads = [(m, p) for m, p in http.sent if m in ("sendPhoto", "sendAudio", "sendDocument")]
+    assert uploads == [("sendPhoto", {"chat_id": OWNER, "files": {"photo": ("image-1.png", b"png-bytes")}}),
+                       ("sendAudio", {"chat_id": OWNER, "files": {"audio": ("speech-1.mp3", b"mp3-bytes")}})]

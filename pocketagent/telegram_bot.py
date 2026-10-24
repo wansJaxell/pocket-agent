@@ -12,6 +12,8 @@ import time
 
 import requests
 
+from pocketagent.media import media_kind
+
 API = "https://api.telegram.org/bot{token}/{method}"
 MESSAGE_LIMIT = 4000   # Telegram allows 4096 characters per message
 
@@ -151,14 +153,33 @@ class TelegramBot:
     def answer(self, chat_id, text: str) -> None:
         done = threading.Event()
         threading.Thread(target=self._keep_typing, args=(chat_id, done), daemon=True).start()
+        files = []
         try:
             answer = self.agent.run(chat_id, text, source="telegram")
-            reply = answer.text + footer(answer)
+            reply, files = answer.text + footer(answer), answer.files
         except Exception as error:   # brain offline, bad key, ...
             reply = f"⚠️ I could not reach my brain: {type(error).__name__}: {error}"
         finally:
             done.set()
         self.send(chat_id, reply)
+        for relative in files:
+            self.send_file(chat_id, relative)
+
+    def send_file(self, chat_id, relative: str) -> None:
+        """Send a workspace file: images as photos, audio as audio, anything else as a document."""
+        path = (self.agent.workspace / relative).resolve()
+        if not path.is_file() or self.agent.workspace.resolve() not in path.parents:
+            return
+        method, field = {"image": ("sendPhoto", "photo"), "audio": ("sendAudio", "audio")}.get(
+            media_kind(path), ("sendDocument", "document"))
+        if method == "sendPhoto" and path.stat().st_size > 10_000_000:     # Telegram's photo limit
+            method, field = "sendDocument", "document"
+        try:
+            with open(path, "rb") as f:
+                self.http.post(API.format(token=self.token, method=method), data={"chat_id": chat_id},
+                               files={field: (path.name, f)}, timeout=120)
+        except requests.RequestException as error:
+            self.send(chat_id, f"⚠️ Could not send {relative}: {error}")
 
     # ---------- stop, rules, approvals ----------
     def stopped_text(self, summary: dict) -> str:

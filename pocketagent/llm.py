@@ -6,7 +6,7 @@ They all speak the same API, so one small client covers every option.
 Only `requests` is used (no heavy SDK), so the agent also installs on Android (Termux).
 
 The user can line up several brains in priority order (the Router): when one is out of free
-credit or rate-limited (HTTP 402/403/429), the next free one answers instead.
+credit, rate-limited, gone or down (HTTP 402/403/404/429/5xx), the next free one answers instead.
 """
 
 import json
@@ -31,11 +31,13 @@ class Provider:
     oauth: bool = False           # sign in from the browser instead of pasting a key
     trains_on_data: bool = False  # the free tier may use your messages to train models
     local: bool = False           # runs on this computer
+    key_check_url: str = ""       # checks the key itself, when the model list answers any key
 
 
 PROVIDERS: dict[str, Provider] = {
     "openrouter": Provider("OpenRouter (free models, sign in from the browser)", "https://openrouter.ai/api/v1", True,
-                           key_url="https://openrouter.ai/keys", name="OpenRouter", oauth=True),
+                           key_url="https://openrouter.ai/keys", name="OpenRouter", oauth=True,
+                           key_check_url="https://openrouter.ai/api/v1/key"),
     "groq": Provider("Groq (free tier, very fast)", "https://api.groq.com/openai/v1", True,
                      key_url="https://console.groq.com/keys", suggested_model="llama-3.3-70b-versatile", name="Groq"),
     "gemini": Provider("Google AI Studio: Gemini (free tier)", "https://generativelanguage.googleapis.com/v1beta/openai",
@@ -57,7 +59,21 @@ PROVIDERS: dict[str, Provider] = {
 }
 
 RETRY_STATUS = {429, 500, 502, 503, 504}   # busy or temporarily broken: worth another try
-FAILOVER_STATUS = {402, 403, 429}          # out of credit, refused or rate-limited: let the next brain answer
+# out of credit, refused, model gone (free models come and go), rate-limited or down: the next brain answers.
+# A wrong key (401) or a bad request (400) is not handed over: it needs fixing.
+FAILOVER_STATUS = {402, 403, 404, 408, 429, 500, 502, 503, 504}
+
+
+def hint(status: int | None, text: str) -> str:
+    """A sentence that says how to fix a common provider error."""
+    if "data policy" in text.lower():
+        return (" OpenRouter refuses free models with your privacy settings: allow them at "
+                "https://openrouter.ai/settings/privacy")
+    if status == 401:
+        return " The API key is wrong or was revoked: save it again in the panel."
+    if status == 404:
+        return " This model is not (or no longer) available for your account."
+    return ""
 
 
 class BrainError(Exception):
@@ -174,8 +190,8 @@ class Brain:
                 time.sleep(self.retry_delay * (attempt + 1))
                 continue
             if response.status_code >= 400:
-                raise BrainError(f"the model server answered HTTP {response.status_code}: {response.text[:300]}",
-                                 status=response.status_code)
+                raise BrainError(f"the model server answered HTTP {response.status_code}: {response.text[:300]}"
+                                 + hint(response.status_code, response.text), status=response.status_code)
             message = response.json()["choices"][0]["message"]
             calls = [ToolCall(id=c.get("id") or f"call_{i}", name=c["function"]["name"],
                               arguments=parse_arguments(c["function"].get("arguments")))
@@ -185,8 +201,8 @@ class Brain:
 
 
 class Router:
-    """The user's brains in priority order. The first one answers; on HTTP 402/403/429 the next
-    *free* brain in the list takes over. The reply says which brain answered and which refused."""
+    """The user's brains in priority order. The first one answers; on HTTP 402/403/404/429/5xx the
+    next *free* brain in the list takes over. The reply says which brain answered and which refused."""
 
     def __init__(self, config: Config, http=None, retry_delay: float = 2.0):
         self.config = config        # read on every call, so changes made in the panel apply at once
@@ -210,10 +226,13 @@ class Router:
             try:
                 reply = brain.chat(messages, tools)
             except BrainError as error:
-                if last or error.status not in FAILOVER_STATUS:
-                    raise
-                skipped.append(f"{brain.label}: HTTP {error.status}")
-                continue
+                if error.status in FAILOVER_STATUS and not last:
+                    skipped.append(f"{brain.label}: HTTP {error.status}")
+                    continue
+                if skipped:          # say what happened to every brain, not only the last one
+                    raise BrainError(f"no brain could answer: {'; '.join(skipped)}; {brain.label}: {error}",
+                                     status=error.status) from error
+                raise
             return replace(reply, brain=brain.label, skipped=skipped)
         raise BrainError("no brain answered")   # not reached
 
@@ -235,7 +254,8 @@ def probe(config: BrainConfig, brain_factory=Brain) -> tuple[str, bool]:
     return strip_thinking(answer), native
 
 
-_NOT_CHAT = re.compile(r"embed|whisper|tts|rerank|moderation|guard|dall-e|image|audio|transcrib", re.IGNORECASE)
+_NOT_CHAT = re.compile(r"embed|whisper|tts|rerank|moderation|guard|safety|dall-e|image|audio|transcrib|lyria",
+                       re.IGNORECASE)
 
 
 def _is_free(model: dict) -> bool:
@@ -247,10 +267,41 @@ def _is_free(model: dict) -> bool:
     return zero or str(model.get("id", "")).endswith(":free")
 
 
+def _describe(item: dict, provider: str) -> dict:
+    """What the panel shows about a model; tools is None when the provider does not say."""
+    architecture = item.get("architecture") or {}
+    parameters = item.get("supported_parameters")
+    capabilities = item.get("capabilities")
+    tools = ("tools" in parameters if isinstance(parameters, list)
+             else "tool-calling" in capabilities if isinstance(capabilities, list) else None)
+    limits = item.get("limits") if isinstance(item.get("limits"), dict) else {}
+    context = item.get("context_length") or item.get("context_window") or limits.get("max_input_tokens")
+    return {"id": str(item.get("id") or item.get("name") or "").removeprefix("models/"),
+            "free": _is_free(item) if provider == "openrouter" else True,
+            "context": context if isinstance(context, int) else None, "tools": tools,
+            "input": architecture.get("input_modalities") or item.get("supported_input_modalities") or ["text"],
+            "created": item.get("created") if isinstance(item.get("created"), int) else None}
+
+
+def check_key(provider: str, api_key: str, http=requests) -> None:
+    """Raise BrainError if the provider refuses the key (only where the model list cannot tell)."""
+    url = PROVIDERS[provider].key_check_url
+    if not url:
+        return
+    try:
+        response = http.get(url, headers={"Authorization": f"Bearer {api_key}"}, timeout=20)
+    except OSError as error:
+        raise BrainError(f"cannot reach {url}: {error}") from error
+    if response.status_code >= 400:
+        raise BrainError(f"{PROVIDERS[provider].name} answered HTTP {response.status_code}", status=response.status_code)
+
+
 def list_models(provider: str, api_key: str = "", base_url: str = "", http=requests) -> list[dict]:
-    """The chat models a provider offers: [{"id": ..., "free": ...}], free ones first.
+    """The chat models a provider offers, free ones and the biggest context first:
+    [{"id", "free", "context", "tools", "input", "created"}].
 
     Only OpenRouter mixes free and paid models; the other providers are used on their free tier.
+    Models that make music, images or speech are left out: they are specialists, not brains.
     """
     info = PROVIDERS[provider]
     url = info.models_url or (base_url or info.base_url).rstrip("/") + "/models"
@@ -266,7 +317,10 @@ def list_models(provider: str, api_key: str = "", base_url: str = "", http=reque
     items = data.get("data", []) if isinstance(data, dict) else data   # the GitHub catalog is a plain list
     models = []
     for item in items if isinstance(items, list) else []:
-        model_id = str(item.get("id") or item.get("name") or "").removeprefix("models/")
-        if model_id and not _NOT_CHAT.search(model_id):
-            models.append({"id": model_id, "free": _is_free(item) if provider == "openrouter" else True})
-    return sorted(models, key=lambda m: (not m["free"], m["id"].lower()))
+        if not isinstance(item, dict):
+            continue
+        outputs = (item.get("architecture") or {}).get("output_modalities") or ["text"]
+        model = _describe(item, provider)
+        if model["id"] and outputs == ["text"] and not _NOT_CHAT.search(model["id"]):
+            models.append(model)
+    return sorted(models, key=lambda m: (not m["free"], -(m["context"] or 0), m["id"].lower()))

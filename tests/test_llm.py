@@ -138,6 +138,23 @@ def test_out_of_credit_or_forbidden_also_hands_over(code):
     assert reply.brain == "Groq · b" and reply.skipped == [f"OpenRouter · a:free: HTTP {code}"]
 
 
+@pytest.mark.parametrize("code", [404, 503])
+def test_a_model_that_is_gone_or_down_also_hands_over(code):
+    config = chain(BrainConfig("openrouter", "https://or.test/v1", "removed:free"), BrainConfig("groq", "https://g.test/v1", "b"))
+    reply = router(config, FakeServer(status(code), ok({"content": "ok"}))).chat([])
+    assert reply.brain == "Groq · b" and reply.skipped == [f"OpenRouter · removed:free: HTTP {code}"]
+
+
+def test_when_every_brain_fails_the_error_lists_them_all():
+    config = chain(BrainConfig("openrouter", "https://or.test/v1", "a:free"), BrainConfig("openrouter", "https://or.test/v1", "b:free"))
+    server = FakeServer(status(429), status(404, "No endpoints found matching your data policy (Free model publication)"),
+                        status(404, "No endpoints found matching your data policy"))
+    with pytest.raises(BrainError) as error:
+        router(config, server).chat([])
+    message = str(error.value)
+    assert "a:free: HTTP 429" in message and "settings/privacy" in message
+
+
 def test_other_errors_are_not_hidden_by_the_fallback():
     config = chain(BrainConfig("groq", "https://g.test/v1", "a"), BrainConfig("gemini", "https://m.test/v1", "b"))
     server = FakeServer(status(401, "invalid api key"))
@@ -175,22 +192,50 @@ class FakeModels:
         return SimpleNamespace(status_code=self.status_code, json=lambda: self.body, text=str(self.body))
 
 
-def test_openrouter_free_models_are_marked_and_listed_first():
-    body = {"data": [
-        {"id": "openai/gpt-5", "pricing": {"prompt": "0.000002", "completion": "0.00001"}},
-        {"id": "meta-llama/llama-3.3-70b-instruct:free", "pricing": {"prompt": "0", "completion": "0"}},
-        {"id": "openrouter/auto", "pricing": {"prompt": "-1", "completion": "-1"}}]}
-    models = list_models("openrouter", http=FakeModels(body))
-    assert models == [{"id": "meta-llama/llama-3.3-70b-instruct:free", "free": True},
-                      {"id": "openai/gpt-5", "free": False}, {"id": "openrouter/auto", "free": False}]
+def ids(models):
+    return [m["id"] for m in models]
+
+
+OPENROUTER_CATALOG = {"data": [
+    {"id": "openai/gpt-5", "pricing": {"prompt": "0.000002", "completion": "0.00001"}, "context_length": 400000,
+     "architecture": {"input_modalities": ["text", "image"], "output_modalities": ["text"]},
+     "supported_parameters": ["tools", "temperature"]},
+    {"id": "cohere/north-mini-code:free", "pricing": {"prompt": "0", "completion": "0"}, "context_length": 256000,
+     "architecture": {"input_modalities": ["text"], "output_modalities": ["text"]}, "supported_parameters": ["tools"]},
+    {"id": "nvidia/nemotron-3-ultra-550b-a55b:free", "pricing": {"prompt": "0", "completion": "0"},
+     "context_length": 1000000, "created": 1760000000,
+     "architecture": {"input_modalities": ["text"], "output_modalities": ["text"]}, "supported_parameters": ["tools"]},
+    {"id": "liquid/lfm-2.5-2.6b:free", "pricing": {"prompt": "0", "completion": "0"}, "context_length": 65536,
+     "architecture": {"input_modalities": ["text"], "output_modalities": ["text"]}, "supported_parameters": []},
+    {"id": "google/lyria-3-clip-preview", "pricing": {"prompt": "0", "completion": "0"}, "context_length": 1048576,
+     "architecture": {"input_modalities": ["text"], "output_modalities": ["text", "audio"]}},
+    {"id": "nvidia/nemotron-3.5-content-safety:free", "pricing": {"prompt": "0", "completion": "0"},
+     "context_length": 128000, "architecture": {"input_modalities": ["text"], "output_modalities": ["text"]}},
+    {"id": "openrouter/auto", "pricing": {"prompt": "-1", "completion": "-1"}, "context_length": 2000000,
+     "architecture": {"input_modalities": ["text"], "output_modalities": ["text", "image"]}}]}
+
+
+def test_openrouter_models_come_with_what_the_panel_needs_to_choose():
+    models = list_models("openrouter", http=FakeModels(OPENROUTER_CATALOG))
+    # free first, biggest context first; music models and safety classifiers are not chat brains
+    assert ids(models) == ["nvidia/nemotron-3-ultra-550b-a55b:free", "cohere/north-mini-code:free",
+                           "liquid/lfm-2.5-2.6b:free", "openai/gpt-5"]
+    ultra = models[0]
+    assert ultra == {"id": "nvidia/nemotron-3-ultra-550b-a55b:free", "free": True, "context": 1000000,
+                     "tools": True, "input": ["text"], "created": 1760000000}
+    assert models[2]["tools"] is False and models[3]["free"] is False
+    assert models[3]["input"] == ["text", "image"]
 
 
 def test_model_lists_from_gemini_and_the_github_catalog():
     gemini = list_models("gemini", "m-key", http=FakeModels(
         {"data": [{"id": "models/gemini-2.5-flash"}, {"id": "models/text-embedding-004"}]}))
-    assert gemini == [{"id": "gemini-2.5-flash", "free": True}]       # no prefix, no embedding models
-    github = FakeModels([{"id": "openai/gpt-4.1-mini"}])
-    assert list_models("github", "ghp-x", http=github) == [{"id": "openai/gpt-4.1-mini", "free": True}]
+    assert ids(gemini) == ["gemini-2.5-flash"]                       # no prefix, no embedding models
+    assert gemini[0]["free"] is True and gemini[0]["tools"] is None   # unknown: the panel tests it
+    github = FakeModels([{"id": "openai/gpt-4.1-mini", "capabilities": ["streaming", "tool-calling"],
+                          "limits": {"max_input_tokens": 1048576}}])
+    model = list_models("github", "ghp-x", http=github)[0]
+    assert (model["id"], model["tools"], model["context"]) == ("openai/gpt-4.1-mini", True, 1048576)
     assert github.calls == [("https://models.github.ai/catalog/models", {"Authorization": "Bearer ghp-x"})]
 
 
