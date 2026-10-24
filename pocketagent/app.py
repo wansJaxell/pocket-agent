@@ -19,7 +19,8 @@ from pocketagent.agent import Agent
 from pocketagent.approvals import ApprovalEngine, AuditLog, RuleStore
 from pocketagent.config import BrainConfig, Config, TelegramConfig
 from pocketagent.jobs import JobQueue
-from pocketagent.llm import PROVIDERS, Brain, BrainError, Router, brain_label, check_key, list_models, probe
+from pocketagent.llm import (PROVIDERS, Brain, BrainError, Router, brain_label, check_key, list_models, probe,
+                             problem_of)
 from pocketagent import media
 from pocketagent.media import MediaError, Studio
 from pocketagent.memory import ConversationStore, DecisionLog, IdentityStore, NoteStore, ReminderStore
@@ -99,6 +100,9 @@ class App:
         approvals = self.runtime.approvals                # approval requests also go to Telegram
         approvals.notifiers.append(lambda pending: self.bot and self.bot.ask_approval(pending))
         approvals.resolved.append(lambda pending: self.bot and self.bot.approval_resolved(pending))
+        self.router = self.runtime.agent.brain if isinstance(self.runtime.agent.brain, Router) else None
+        if self.router:
+            self.router.on_problem = self._model_problem
 
     def save(self) -> None:
         with self.lock:
@@ -119,7 +123,8 @@ class App:
             "identity": self.runtime.identity.get(),
             "providers": [self._provider(pid) for pid in PROVIDERS],
             "custom_url": c.custom_url,
-            "brains": [self._brain(i, b) for i, b in enumerate(c.brains())],
+            "brains": [self._brain(i, b) for i, b in enumerate(c.chain())],
+            "limits": self.router.status() if self.router else {},
             "telegram": self._telegram(),
             "access": c.access,
             "free_sync": {k: v for k, v in c.free_sync.items() if k != "skip"},
@@ -144,12 +149,14 @@ class App:
         p, key = PROVIDERS[pid], self.config.keys.get(pid, "")
         return {"id": pid, "name": p.name, "label": p.label, "needs_key": p.needs_key, "key_url": p.key_url,
                 "oauth": p.oauth, "trains_on_data": p.trains_on_data, "local": p.local,
-                "suggested_model": p.suggested_model, "has_key": bool(key), "key_hint": mask(key) if key else ""}
+                "suggested_model": p.suggested_model, "has_key": bool(key), "key_hint": mask(key) if key else "",
+                "enabled": pid not in self.config.disabled_providers}
 
-    @staticmethod
-    def _brain(index: int, b: BrainConfig) -> dict:
+    def _brain(self, index: int, b: BrainConfig) -> dict:
+        """b comes from config.chain(), so its key is filled in (never shown, only checked)."""
         return {"index": index, "provider": b.provider, "model": b.model, "label": brain_label(b),
-                "free": b.free, "native_tools": b.native_tools, "auto": b.auto}
+                "free": b.free, "native_tools": b.native_tools, "auto": b.auto, "enabled": b.enabled,
+                "problem": self.router.usable(b) if self.router else ""}
 
     def _telegram(self) -> dict:
         username = self.config.telegram.username or self._telegram_pending
@@ -192,6 +199,47 @@ class App:
             self.save()
         return {"models": models}
 
+    def delete_key(self, provider: str) -> None:
+        """Forget a saved key (a wrong one, or a provider you no longer use)."""
+        self._provider_info(provider)
+        with self.lock:
+            if self.config.keys.pop(provider, None) is None:
+                raise PanelError("There is no saved key for this provider.")
+            self.save()
+        self._catalog.pop(provider, None)
+        self.runtime.audit.write("key_deleted", provider=provider)
+
+    def set_provider_enabled(self, provider: str, enabled: bool) -> None:
+        """Switch a whole provider off (all its brains are skipped) or on again."""
+        self._provider_info(provider)
+        with self.lock:
+            disabled = [p for p in self.config.disabled_providers if p != provider]
+            self.config.disabled_providers = disabled if enabled else disabled + [provider]
+            self.save()
+        self.runtime.audit.write("provider_switched", provider=provider, enabled=bool(enabled))
+
+    def toggle_brain(self, index, enabled: bool) -> None:
+        with self.lock:
+            brains, index = self._brain_list(index)
+            brains[index].enabled = bool(enabled)
+            self.config.set_brains(brains)
+            self.save()
+
+    def _model_problem(self, brain: BrainConfig, problem: str, error: Exception) -> None:
+        """A brain failed in a way that will not go away by itself: switch it off and say so."""
+        if problem != "app_only":
+            return
+        with self.lock:
+            for b in self.config.brains():
+                if (b.provider, b.model) == (brain.provider, brain.model):
+                    b.enabled = False
+            skip = self.config.free_sync.setdefault("skip", [])
+            if brain.model not in skip:
+                skip.append(brain.model)
+            self.save()
+        self.notice(f"{brain.model} is only for some other apps on OpenRouter: it was switched off.")
+        self.runtime.audit.write("brain_switched_off", model=brain.model, reason=problem)
+
     def models(self, provider: str) -> dict:
         info = self._provider_info(provider)
         if info.needs_key and provider not in self.config.keys:
@@ -219,9 +267,17 @@ class App:
         known, warning = self._catalog.get(provider, {}).get(model), ""
         try:
             answer, brain.native_tools = probe(self.config.with_key(brain),
-                                               lambda c: Brain(c, http=self.http, retries=0))
+                                               lambda c: Brain(c, http=self.http, retries=0),
+                                               known_tools=known.get("tools") if known else None)
         except Exception as error:
             status = getattr(error, "status", None)
+            if isinstance(error, BrainError) and problem_of(error) == "app_only":
+                with self.lock:
+                    self.config.free_sync.setdefault("skip", []).append(model)
+                    self.save()
+                self.runtime.audit.write("brain_add_failed", provider=provider, model=model, error=str(error))
+                raise PanelError(f"{model} is kept for other apps only by OpenRouter (\"agentic harnesses\"): "
+                                 "PocketAgent cannot use it. Choose another model.") from None
             if status not in BUSY or known is None:
                 self.runtime.audit.write("brain_add_failed", provider=provider, model=model, error=str(error))
                 raise PanelError(f"{brain_label(brain)} did not answer: {error}") from None
@@ -275,6 +331,8 @@ class App:
         user's own brains, as automatic fallbacks; the previous automatic ones are replaced."""
         if "openrouter" not in self.config.keys:
             raise PanelError("Connect OpenRouter first (step 1), then add its free models.")
+        if "openrouter" in self.config.disabled_providers:
+            raise PanelError("OpenRouter is switched off: switch it on first.")
         settings = self.config.free_sync
         count = settings.get("count", 5) if count is None else max(0, min(int(count), 20))
         min_context = settings.get("min_context", 0) if min_context is None else max(0, int(min_context))
@@ -316,7 +374,8 @@ class App:
 
     def _free_sync_due(self) -> bool:
         settings = self.config.free_sync
-        if not settings.get("enabled") or self.locked or "openrouter" not in self.config.keys:
+        if (not settings.get("enabled") or self.locked or "openrouter" not in self.config.keys
+                or "openrouter" in self.config.disabled_providers):
             return False
         try:
             return (datetime.now() - datetime.fromisoformat(settings.get("last") or "")).total_seconds() > SYNC_EVERY

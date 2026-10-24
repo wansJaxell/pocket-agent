@@ -20,6 +20,9 @@ class FakeTelegram:
         if method == "getUpdates":
             result, self.updates = self.updates, []
             return SimpleNamespace(json=lambda: {"ok": True, "result": result})
+        if json and json.get("parse_mode") and getattr(self, "refuse_html", False):
+            self.sent.append((method, json))
+            return SimpleNamespace(json=lambda: {"ok": False, "description": "Bad Request: can't parse entities"})
         if files:                                     # an upload: keep the field name and the bytes
             self.sent.append((method, {**data, "files": {k: (v[0], v[1].read()) for k, v in files.items()}}))
         else:
@@ -181,3 +184,33 @@ def test_images_and_audio_made_for_the_answer_are_sent_as_files(make_runtime):
     uploads = [(m, p) for m, p in http.sent if m in ("sendPhoto", "sendAudio", "sendDocument")]
     assert uploads == [("sendPhoto", {"chat_id": OWNER, "files": {"photo": ("image-1.png", b"png-bytes")}}),
                        ("sendAudio", {"chat_id": OWNER, "files": {"audio": ("speech-1.mp3", b"mp3-bytes")}})]
+
+
+# ---------- formatting ----------
+def test_model_markdown_becomes_telegram_formatting():
+    from pocketagent.telegram_bot import to_html
+    text = ("### Sonuç\n**Kalın** ve *eğik*, `fetch_webpage` ve [OpenRouter](https://openrouter.ai).\n"
+            "- birinci madde\n---\n```python\nprint(\"<a> & b\")\n```")
+    html = to_html(text)
+    assert "<b>Sonuç</b>" in html and "<b>Kalın</b>" in html and "<i>eğik</i>" in html
+    assert "<code>fetch_webpage</code>" in html and '<a href="https://openrouter.ai">OpenRouter</a>' in html
+    assert "• birinci madde" in html
+    assert "<pre>print(&quot;&lt;a&gt; &amp; b&quot;)</pre>" in html or "<pre>print(\"&lt;a&gt; &amp; b\")</pre>" in html
+    assert "snake_case_name" in to_html("snake_case_name")          # underscores stay as they are
+
+
+def test_markdown_tables_become_aligned_blocks():
+    from pocketagent.telegram_bot import to_html
+    html = to_html("| Yetenek | Durum |\n|---|---|\n| fetch | ✅ Var |\n| JavaScript | ❌ Yok |")
+    assert html.startswith("<pre>") and "|---" not in html
+    assert "Yetenek     Durum" in html and "JavaScript  ❌ Yok" in html
+
+
+def test_answers_are_sent_as_html_and_plain_text_if_telegram_refuses(make_runtime):
+    bot, http, _ = make_bot(make_runtime, say("**ok**"))
+    bot.handle(message(OWNER, "hi"))
+    method, sent = [(m, p) for m, p in http.sent if m == "sendMessage"][-1]
+    assert sent["text"] == "<b>ok</b>" and sent["parse_mode"] == "HTML"
+    http.refuse_html = True
+    bot.send(OWNER, "**broken <b> markup**")
+    assert http.sent[-1][1]["text"] == "**broken <b> markup**" and "parse_mode" not in http.sent[-1][1]

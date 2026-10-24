@@ -13,6 +13,7 @@ import json
 import re
 import time
 from dataclasses import dataclass, field, replace
+from datetime import datetime, timedelta, timezone
 
 import requests
 
@@ -32,6 +33,7 @@ class Provider:
     trains_on_data: bool = False  # the free tier may use your messages to train models
     local: bool = False           # runs on this computer
     key_check_url: str = ""       # checks the key itself, when the model list answers any key
+    key_check_chat: bool = False  # no such page: a 1-token chat request checks the key instead
 
 
 PROVIDERS: dict[str, Provider] = {
@@ -45,11 +47,11 @@ PROVIDERS: dict[str, Provider] = {
                        name="Gemini", trains_on_data=True),
     "nvidia": Provider("NVIDIA build.nvidia.com (free tier)", "https://integrate.api.nvidia.com/v1", True,
                        key_url="https://build.nvidia.com", suggested_model="nvidia/nemotron-3-super-120b-a12b",
-                       name="NVIDIA"),
+                       name="NVIDIA", key_check_chat=True),
     "github": Provider("GitHub Models (free with a GitHub account)", "https://models.github.ai/inference", True,
                        key_url="https://github.com/settings/personal-access-tokens/new",
                        suggested_model="openai/gpt-4.1-mini", name="GitHub Models",
-                       models_url="https://models.github.ai/catalog/models"),
+                       models_url="https://models.github.ai/catalog/models", key_check_chat=True),
     "cerebras": Provider("Cerebras (free tier)", "https://api.cerebras.ai/v1", True,
                          key_url="https://cloud.cerebras.ai", suggested_model="gpt-oss-120b", name="Cerebras"),
     "ollama": Provider("Ollama (local, free)", "http://localhost:11434/v1", False,
@@ -69,6 +71,11 @@ def hint(status: int | None, text: str) -> str:
     if "data policy" in text.lower():
         return (" OpenRouter refuses free models with your privacy settings: allow them at "
                 "https://openrouter.ai/settings/privacy")
+    if "free-models-per-day" in text.lower():
+        return (" OpenRouter's daily free limit is used up (50 requests a day for the whole account, 1000 after a "
+                "one-time $10 top-up); add a brain from another provider to keep going.")
+    if "agentic harness" in text.lower():
+        return " OpenRouter keeps this free model for some other apps only: PocketAgent cannot use it."
     if status == 401:
         return " The API key is wrong or was revoked: save it again in the panel."
     if status == 404:
@@ -79,9 +86,25 @@ def hint(status: int | None, text: str) -> str:
 class BrainError(Exception):
     """The model server could not be reached or refused the request."""
 
-    def __init__(self, message: str, status: int | None = None):
+    def __init__(self, message: str, status: int | None = None, text: str = "", headers=None):
         super().__init__(message)
-        self.status = status
+        self.status, self.text, self.headers = status, text, dict(headers or {})
+
+
+def problem_of(error: BrainError) -> str:
+    """Name the provider problems that need more than "try the next brain"."""
+    text = (error.text or str(error)).lower()
+    if error.status == 429 and "free-models-per-day" in text:
+        return "daily_quota"         # OpenRouter: 50 free requests a day per account (1000 after a $10 top-up)
+    if error.status == 403 and "agentic harness" in text:
+        return "app_only"            # OpenRouter: this free model is only for some listed apps
+    if "data policy" in text:
+        return "data_policy"
+    return ""
+
+
+def is_openrouter_free(brain: BrainConfig) -> bool:
+    return brain.provider == "openrouter" and (brain.model.endswith(":free") or brain.model == "openrouter/free")
 
 
 @dataclass
@@ -191,7 +214,8 @@ class Brain:
                 continue
             if response.status_code >= 400:
                 raise BrainError(f"the model server answered HTTP {response.status_code}: {response.text[:300]}"
-                                 + hint(response.status_code, response.text), status=response.status_code)
+                                 + hint(response.status_code, response.text), status=response.status_code,
+                                 text=response.text, headers=getattr(response, "headers", None))
             message = response.json()["choices"][0]["message"]
             calls = [ToolCall(id=c.get("id") or f"call_{i}", name=c["function"]["name"],
                               arguments=parse_arguments(c["function"].get("arguments")))
@@ -208,26 +232,66 @@ class Router:
         self.config = config        # read on every call, so changes made in the panel apply at once
         self.http = http or requests.Session()
         self.retry_delay = retry_delay
+        self.cooldowns: dict[str, float] = {}   # "openrouter-free" -> time when the daily limit resets
+        self.on_problem = None                  # called with (brain, problem, error), e.g. to switch a brain off
+
+    def usable(self, brain: BrainConfig) -> str:
+        """Why a brain cannot be used right now ("" if it can)."""
+        if not brain.enabled:
+            return "off"
+        if brain.provider in self.config.disabled_providers:
+            return "provider_off"
+        provider = PROVIDERS.get(brain.provider)
+        if provider and provider.needs_key and brain.provider != "custom" and not brain.api_key:
+            return "no_key"
+        if is_openrouter_free(brain) and self.cooldowns.get("openrouter-free", 0) > time.time():
+            return "daily_quota"
+        return ""
 
     def candidates(self) -> list[BrainConfig]:
-        chain = self.config.chain()
+        chain = [b for b in self.config.chain() if not self.usable(b)]
         return chain[:1] + [b for b in chain[1:] if b.free]
+
+    def status(self) -> dict:
+        until = self.cooldowns.get("openrouter-free", 0)
+        return {"openrouter_free_until": datetime.fromtimestamp(until).isoformat(timespec="minutes")
+                if until > time.time() else None}
+
+    def _daily_quota(self, error: BrainError) -> None:
+        """Remember until when OpenRouter's free models are used up (its reset header, or next UTC midnight)."""
+        try:
+            until = int(error.headers.get("X-RateLimit-Reset") or error.headers.get("x-ratelimit-reset")) / 1000
+        except (TypeError, ValueError):
+            tomorrow = datetime.now(timezone.utc).date() + timedelta(days=1)
+            until = datetime(tomorrow.year, tomorrow.month, tomorrow.day, tzinfo=timezone.utc).timestamp()
+        self.cooldowns["openrouter-free"] = until
 
     def chat(self, messages: list[dict], tools: list[dict] | None = None) -> Reply:
         candidates = self.candidates()
         if not candidates:
-            raise BrainError("no brain is connected yet: open the panel and connect one")
+            raise BrainError("no brain is connected yet, or every brain is switched off: open the panel")
         skipped = []
         for number, config in enumerate(candidates, 1):
             last = number == len(candidates)
+            if self.usable(config):           # e.g. the daily limit was hit by an earlier brain in this call
+                if last and not skipped:
+                    raise BrainError("no brain can answer right now")
+                continue
             # with a fallback waiting, a rate limit is not worth waiting for
             brain = Brain(config, http=self.http, retry_delay=self.retry_delay,
                           retry_status=RETRY_STATUS if last else RETRY_STATUS - FAILOVER_STATUS)
             try:
                 reply = brain.chat(messages, tools)
             except BrainError as error:
+                problem = problem_of(error)
+                if problem == "daily_quota":
+                    self._daily_quota(error)
+                    skipped.append(f"OpenRouter: daily free limit (until {self.status()['openrouter_free_until'][11:]})")
+                elif problem and self.on_problem:
+                    self.on_problem(config, problem, error)
                 if error.status in FAILOVER_STATUS and not last:
-                    skipped.append(f"{brain.label}: HTTP {error.status}")
+                    if problem != "daily_quota":
+                        skipped.append(f"{brain.label}: HTTP {error.status}")
                     continue
                 if skipped:          # say what happened to every brain, not only the last one
                     raise BrainError(f"no brain could answer: {'; '.join(skipped)}; {brain.label}: {error}",
@@ -242,10 +306,15 @@ TIME_TOOL = {"type": "function", "function": {
     "parameters": {"type": "object", "properties": {}, "required": []}}}
 
 
-def probe(config: BrainConfig, brain_factory=Brain) -> tuple[str, bool]:
-    """Check a brain answers (raises BrainError if not), then whether it supports native tool calls."""
+def probe(config: BrainConfig, brain_factory=Brain, known_tools: bool | None = None) -> tuple[str, bool]:
+    """Check a brain answers (raises BrainError if not), then whether it supports native tool calls.
+
+    known_tools: what the provider's model list says; then one request is enough (free quotas are small).
+    """
     brain = brain_factory(replace(config, native_tools=True))
     answer = brain.chat([{"role": "user", "content": "Reply with the single word OK."}]).content
+    if known_tools is not None:
+        return strip_thinking(answer), known_tools
     try:
         reply = brain.chat([{"role": "user", "content": "What time is it now? Use your tool."}], [TIME_TOOL])
         native = bool(reply.tool_calls)
@@ -285,15 +354,22 @@ def _describe(item: dict, provider: str) -> dict:
 
 def check_key(provider: str, api_key: str, http=requests) -> None:
     """Raise BrainError if the provider refuses the key (only where the model list cannot tell)."""
-    url = PROVIDERS[provider].key_check_url
-    if not url:
-        return
+    info = PROVIDERS[provider]
+    headers = {"Authorization": f"Bearer {api_key}"}
     try:
-        response = http.get(url, headers={"Authorization": f"Bearer {api_key}"}, timeout=20)
+        if info.key_check_url:
+            response = http.get(info.key_check_url, headers=headers, timeout=20)
+        elif info.key_check_chat:      # NVIDIA, GitHub: their model lists answer any key
+            response = http.post(info.base_url.rstrip("/") + "/chat/completions", headers=headers, timeout=60,
+                                 json={"model": info.suggested_model, "max_tokens": 1,
+                                       "messages": [{"role": "user", "content": "hi"}]})
+        else:
+            return
     except OSError as error:
-        raise BrainError(f"cannot reach {url}: {error}") from error
-    if response.status_code >= 400:
-        raise BrainError(f"{PROVIDERS[provider].name} answered HTTP {response.status_code}", status=response.status_code)
+        raise BrainError(f"cannot reach {info.name}: {error}") from error
+    refused = response.status_code >= 400 if info.key_check_url else response.status_code in (401, 403)
+    if refused:     # for the chat check, other errors (a retired model, a busy server) say nothing about the key
+        raise BrainError(f"{info.name} answered HTTP {response.status_code}", status=response.status_code)
 
 
 def list_models(provider: str, api_key: str = "", base_url: str = "", http=requests) -> list[dict]:

@@ -107,7 +107,8 @@ def test_http_errors_carry_the_status_code():
 def chain(*brains, keys=None):
     config = Config()
     config.set_brains(list(brains))
-    config.keys = keys or {}
+    # brains without a key are skipped, so every provider gets one unless the test says otherwise
+    config.keys = keys or {provider: f"{provider}-key" for provider in ("groq", "openrouter", "gemini", "nvidia")}
     return config
 
 

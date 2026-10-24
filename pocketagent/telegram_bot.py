@@ -7,6 +7,8 @@ Uses long polling, so it works on a home computer without a public server.
 /dur (or /stop) stops everything at once. Approval requests arrive as messages with buttons.
 """
 
+import html
+import re
 import threading
 import time
 
@@ -74,6 +76,62 @@ def split_message(text: str, limit: int = MESSAGE_LIMIT) -> list[str]:
     return [p.rstrip() for p in parts] or [""]
 
 
+_CODE_BLOCK = re.compile(r"```[\w+#.-]*\n?(.*?)```", re.DOTALL)
+_INLINE_CODE = re.compile(r"`([^`\n]+)`")
+_LINK = re.compile(r"\[([^\]\n]+)\]\((https?://[^\s)]+)\)")
+_BOLD = re.compile(r"\*\*(?=\S)(.+?)(?<=\S)\*\*")
+_ITALIC = re.compile(r"(?<![*\w])\*(?=\S)([^*\n]+?)(?<=\S)\*(?![*\w])")
+_STRIKE = re.compile(r"~~(?=\S)(.+?)(?<=\S)~~")
+_HEADING = re.compile(r"^#{1,6}\s+(.+?)\s*#*$", re.MULTILINE)
+_BULLET = re.compile(r"^(\s*)[-*]\s+", re.MULTILINE)
+_RULE = re.compile(r"^\s*(-{3,}|\*{3,}|_{3,})\s*$", re.MULTILINE)
+_SEPARATOR = re.compile(r":?-{2,}:?")
+
+
+def _table(lines: list[str]) -> str:
+    """A Markdown table as aligned plain-text columns (Telegram has no tables)."""
+    rows = []
+    for line in lines:
+        cells = [re.sub(r"\*\*|`", "", c).strip() for c in line.strip().strip("|").split("|")]
+        if all(_SEPARATOR.fullmatch(c) for c in cells if c):     # the |---|---| line
+            continue
+        rows.append(cells)
+    if not rows:
+        return ""
+    widths = [max(len(r[i]) if i < len(r) else 0 for r in rows) for i in range(max(map(len, rows)))]
+    return "\n".join("  ".join(cell.ljust(widths[i]) for i, cell in enumerate(r)).rstrip() for r in rows)
+
+
+def to_html(text: str) -> str:
+    """Model answers are Markdown; Telegram shows a small HTML subset. Everything else is escaped."""
+    kept = []           # code blocks and tables stay out of the inline rules
+
+    def keep(fragment: str) -> str:
+        kept.append(fragment)
+        return f"\x00{len(kept) - 1}\x00"
+
+    text = _CODE_BLOCK.sub(lambda m: keep("<pre>" + html.escape(m.group(1).rstrip("\n"), quote=False) + "</pre>"), text)
+    lines, table = [], []
+    for line in text.split("\n") + [""]:
+        if line.strip().startswith("|") and line.strip().endswith("|") and len(line.strip()) > 1:
+            table.append(line)
+            continue
+        if table:
+            lines.append(keep("<pre>" + html.escape(_table(table), quote=False) + "</pre>"))
+            table = []
+        lines.append(line)
+    text = html.escape("\n".join(lines[:-1]), quote=False)
+    text = _INLINE_CODE.sub(lambda m: keep(f"<code>{m.group(1)}</code>"), text)
+    text = _LINK.sub(lambda m: f'<a href="{m.group(2).replace(chr(34), "%22")}">{m.group(1)}</a>', text)
+    text = _HEADING.sub(r"<b>\1</b>", text)
+    text = _RULE.sub("──────────", text)
+    text = _BULLET.sub(r"\1• ", text)
+    text = _BOLD.sub(r"<b>\1</b>", text)
+    text = _STRIKE.sub(r"<s>\1</s>", text)
+    text = _ITALIC.sub(r"<i>\1</i>", text)
+    return re.sub("\x00(\\d+)\x00", lambda m: kept[int(m.group(1))], text)
+
+
 def footer(answer) -> str:
     """The lines under an answer: tools used and the brain that wrote it."""
     lines = []
@@ -106,8 +164,10 @@ class TelegramBot:
         return response.json()
 
     def send(self, chat_id, text: str) -> None:
-        for part in split_message(text):
-            self.call("sendMessage", chat_id=chat_id, text=part)
+        for part in split_message(text, MESSAGE_LIMIT - 500):     # room for the HTML tags
+            reply = self.call("sendMessage", chat_id=chat_id, text=to_html(part), parse_mode="HTML")
+            if reply.get("ok") is False:          # Telegram could not read the markup: send it as it is
+                self.call("sendMessage", chat_id=chat_id, text=part)
 
     def _keep_typing(self, chat_id, done: threading.Event) -> None:
         """Telegram's "typing..." lasts 5 s; repeat it while a slow local model thinks."""

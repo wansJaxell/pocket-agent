@@ -110,6 +110,10 @@ label.inline{display:inline-flex;gap:6px;align-items:center}
 .try-result{flex-basis:100%}
 img.shot{max-width:min(100%,420px);border-radius:10px;display:block;margin-top:8px;border:1px solid var(--line)}
 audio{display:block;margin-top:8px;max-width:100%}
+ol.brains li.off{opacity:.55}
+.tag.warn{color:var(--warn);background:var(--warn-bg)}
+.chip.version{font-family:ui-monospace,Consolas,monospace}
+.providers button.off{opacity:.55;text-decoration:line-through}
 label.choice{display:flex;gap:8px;align-items:center;border:1px solid var(--line);border-radius:10px;padding:8px 12px;cursor:pointer}
 label.choice input{margin:0}
 textarea.wide{width:100%;min-height:70px;resize:vertical}
@@ -120,7 +124,7 @@ textarea.wide{width:100%;min-height:70px;resize:vertical}
 </head>
 <body>
 <header>
-  <div class="brand"><span aria-hidden="true">🤖</span><b id="agent-name">PocketAgent</b><span class="chips" id="chips"></span></div>
+  <div class="brand"><span aria-hidden="true">🤖</span><b id="agent-name">PocketAgent</b><span class="chip version" id="version" title="PocketAgent"></span><span class="chips" id="chips"></span></div>
   <div class="tools">
     <button class="stop" id="stop" type="button" data-t="stop"></button>
     <button class="btn small" id="lock-now" type="button" data-t="access.lock_now" hidden></button>
@@ -257,6 +261,10 @@ en: {
  "chat.placeholder": "Write a message… (Enter sends, Shift+Enter: new line)", "chat.send": "Send",
  "chat.reset": "New chat", "chat.thinking": "thinking…", "chat.nobrain": "Connect a brain in Setup first.",
  "chip.brain": "brain", "chip.nobrain": "no brain yet", "chip.tg": "Telegram", "chip.notg": "Telegram off",
+ "key.delete": "Delete key", "key.deleted": "Key deleted.", "key.delete_confirm": "Delete the saved key for {name}?",
+ "provider.use": "Use this provider", "brain.on": "on", "problem.off": "off", "problem.provider_off": "provider off",
+ "problem.no_key": "no key", "problem.daily_quota": "daily free limit used up",
+ "limit.openrouter": "OpenRouter's daily free limit is used up (50 requests a day for the whole account). It resets at {time}; meanwhile your other brains answer.",
  "name.personality": "Personality (optional): how should your agent talk and behave?",
  "lock.title": "The panel is locked", "lock.hint": "Enter the panel password. Your API keys are encrypted with it.",
  "lock.password": "Password", "lock.open": "Unlock", "lock.forgot": "I forgot the password",
@@ -332,6 +340,10 @@ tr: {
  "chat.placeholder": "Bir mesaj yaz… (Enter gönderir, Shift+Enter: yeni satır)", "chat.send": "Gönder",
  "chat.reset": "Yeni sohbet", "chat.thinking": "düşünüyor…", "chat.nobrain": "Önce Kurulum'dan bir beyin bağla.",
  "chip.brain": "beyin", "chip.nobrain": "beyin yok", "chip.tg": "Telegram", "chip.notg": "Telegram kapalı",
+ "key.delete": "Anahtarı sil", "key.deleted": "Anahtar silindi.", "key.delete_confirm": "{name} için kayıtlı anahtar silinsin mi?",
+ "provider.use": "Bu sağlayıcıyı kullan", "brain.on": "açık", "problem.off": "kapalı", "problem.provider_off": "sağlayıcı kapalı",
+ "problem.no_key": "anahtar yok", "problem.daily_quota": "günlük ücretsiz limit doldu",
+ "limit.openrouter": "OpenRouter'ın günlük ücretsiz limiti doldu (hesap başına günde 50 istek). {time}'de açılır; bu arada diğer beyinlerin cevap verir.",
  "name.personality": "Kişilik (isteğe bağlı): ajanın nasıl konuşsun, nasıl davransın?",
  "lock.title": "Panel kilitli", "lock.hint": "Panel şifreni gir. API anahtarların bu şifreyle şifrelendi.",
  "lock.password": "Şifre", "lock.open": "Kilidi aç", "lock.forgot": "Şifremi unuttum",
@@ -460,6 +472,7 @@ function showTab(name) {
 // ---------- header ----------
 function renderHeader() {
   $("agent-name").textContent = S.identity.name;
+  $("version").textContent = "v" + S.version;
   document.title = S.identity.name + " · PocketAgent";
   if (S.locked) { fill($("chips")); delete shown.chips; return; }
   if (!changed("chips", [S.brains[0] && S.brains[0].label, S.telegram.connected])) return;
@@ -475,9 +488,9 @@ function provider(id) { return S.providers.find(p => p.id === id); }
 
 function renderProviders() {
   $("num-brain").className = "num" + (S.setup.brain ? " done" : "");
-  if (!changed("providers", [selected, S.providers.map(p => [p.id, p.has_key])])) return;
+  if (!changed("providers", [selected, S.providers.map(p => [p.id, p.has_key, p.enabled])])) return;
   fill($("providers"), ...S.providers.map(p => h("button", {
-      class: p.id === selected ? "selected" : "", type: "button",
+      class: (p.id === selected ? "selected" : "") + (p.enabled ? "" : " off"), type: "button",
       onclick: () => { selected = p.id; renderProviders(); renderDetail(); }},
     p.name, p.has_key ? h("span", {class: "key", text: "✓"}) : null)));
 }
@@ -522,9 +535,23 @@ async function renderDetail() {
     parts.push(h("div", {class: "row"}, key, save,
       p.key_url ? h("a", {class: "linkbtn", href: p.key_url, target: "_blank", rel: "noopener noreferrer",
                           text: t("brain.getkey")}) : null));
-    if (p.has_key) parts.push(h("p", {class: "ok", text: t("brain.saved") + " " + p.key_hint}));
+    if (p.has_key) {
+      const remove = h("button", {class: "btn small", type: "button", text: t("key.delete"), onclick: () => act(remove, async () => {
+        if (!confirm(t("key.delete_confirm").replace("{name}", p.name))) return;
+        await api("key/delete", {provider: p.id});
+        delete models[p.id];
+        toast(t("key.deleted"));
+        await refresh();
+        renderDetail();
+      })});
+      parts.push(h("div", {class: "row"}, h("span", {class: "ok", text: t("brain.saved") + " " + p.key_hint}), remove));
+    }
   }
-  fill(box, ...parts, h("div", {id: "model-box"}));
+  const use = checkbox(t("provider.use"), p.enabled, enabled => act(null, async () => {
+    await api("provider/toggle", {provider: p.id, enabled});
+    await refresh();
+  }));
+  fill(box, ...parts, h("div", {class: "row"}, use), h("div", {id: "model-box"}));
   if (models[p.id] === undefined) await loadModels(p);
   if (selected === p.id) renderModelChooser(p);
 }
@@ -625,8 +652,12 @@ function freeSyncBox() {
 }
 
 function renderBrains() {
-  if (!changed("brains", S.brains)) return;
+  if (!changed("brains", [S.brains, S.limits])) return;
   const items = S.brains.map((b, i) => {
+    const onOff = checkbox(t("brain.on"), b.enabled, enabled => act(null, async () => {
+      await api("brains/toggle", {index: i, enabled});
+      await refresh();
+    }));
     const test = h("button", {class: "btn small", type: "button", text: t("brain.test"), onclick: () => act(test, async () => {
       const result = await api("brains/test", {index: i});
       toast(result.ok ? b.label + ": " + t("brain.works") : result.message, !result.ok);
@@ -634,8 +665,10 @@ function renderBrains() {
     const move = (delta, label) => h("button", {class: "btn small", type: "button", text: label, "aria-label": label,
       disabled: (delta < 0 && i === 0) || (delta > 0 && i === S.brains.length - 1),
       onclick: () => act(null, async () => { await api("brains/move", {index: i, delta}); await refresh(); })});
-    return h("li", {},
+    return h("li", {class: b.problem ? "off" : ""},
+      onOff,
       h("span", {class: "label", text: b.label}),
+      b.problem && b.problem !== "off" ? h("span", {class: "tag warn", text: t("problem." + b.problem)}) : null,
       h("span", {class: "tag" + (b.free ? " free" : ""), text: b.free ? t("brain.free") : t("brain.paid")}),
       b.native_tools ? null : h("span", {class: "tag", text: t("brain.texttools")}),
       b.auto ? h("span", {class: "tag", text: "🔄 " + t("brain.auto")}) : null,
@@ -643,7 +676,9 @@ function renderBrains() {
       h("button", {class: "btn small", type: "button", text: "✕", "aria-label": "remove",
                    onclick: () => act(null, async () => { await api("brains/remove", {index: i}); await refresh(); })}));
   });
-  fill($("brains"), ...(items.length ? items : [h("p", {class: "hint", text: t("brain.none")})]));
+  const until = S.limits && S.limits.openrouter_free_until;
+  fill($("brains"), ...(items.length ? items : [h("p", {class: "hint", text: t("brain.none")})]),
+    until ? h("p", {class: "note warn", text: t("limit.openrouter").replace("{time}", until.replace("T", " ").slice(11))}) : null);
 }
 
 // ---------- step 2: Telegram ----------
