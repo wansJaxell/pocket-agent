@@ -87,3 +87,79 @@ def test_answer_says_which_brain_was_used(make_runtime):
                                                 skipped=["OpenRouter · x:free: HTTP 429"]))
     bot.handle(message(OWNER, "selam"))
     assert http.messages_to(OWNER) == ["Selam!\n\n🧠 Groq · llama (↪ OpenRouter · x:free: HTTP 429)"]
+
+
+# ---------- approvals and the stop command ----------
+def safety_bot(make_runtime, stopped):
+    runtime, _ = make_runtime()
+    runtime.config.computer_use = True
+    http = FakeTelegram()
+    bot = TelegramBot("TOKEN", OWNER, runtime.agent, runtime.registry, runtime.conversations, http=http,
+                      approvals=runtime.approvals, on_stop=lambda by: stopped.append(by) or
+                      {"jobs": 1, "approvals": 0, "processes": 2})
+    runtime.approvals.notifiers.append(bot.ask_approval)
+    return runtime, bot, http
+
+
+def press(bot, http, button_text, chat_id=OWNER):
+    method, sent = [(m, p) for m, p in http.sent if m == "sendMessage" and "reply_markup" in p][-1]
+    buttons = [b for row in sent["reply_markup"]["inline_keyboard"] for b in row]
+    data = next(b["callback_data"] for b in buttons if b["text"] == button_text)
+    bot.handle_callback({"id": "cb1", "from": {"id": chat_id}, "data": data,
+                         "message": {"message_id": 5, "chat": {"id": chat_id}}})
+
+
+def test_approval_buttons_in_telegram(make_runtime):
+    import threading
+    from pocketagent.approvals import Action
+    runtime, bot, http = safety_bot(make_runtime, [])
+    action = Action("shell", "Run a command", {"command": "git status", "folder": "C:/work"},
+                    scope={"command": "git status", "folder": "C:/work"})
+    result = []
+    worker = threading.Thread(target=lambda: result.append(runtime.approvals.request(action)))
+    worker.start()
+    while not any("reply_markup" in p for _, p in http.sent):
+        pass
+    prompt = http.messages_to(OWNER)[-1]
+    assert "git status" in prompt and "C:/work" in prompt
+    press(bot, http, "📌 Allow + remember")
+    worker.join(5)
+    assert result == ["approved"] and runtime.approvals.rules.all()[0]["scope"]["command"] == "git status"
+    assert ("answerCallbackQuery", {"callback_query_id": "cb1", "text": "✅ Allowed + rule saved"}) in http.sent
+
+
+def test_strangers_cannot_press_approval_buttons(make_runtime):
+    runtime, bot, http = safety_bot(make_runtime, [])
+    bot.handle_callback({"id": "x", "from": {"id": STRANGER}, "data": "ap:1:once",
+                         "message": {"message_id": 5, "chat": {"id": STRANGER}}})
+    assert not any(m == "answerCallbackQuery" and "Allowed" in p.get("text", "") for m, p in http.sent)
+
+
+def test_always_ask_requests_offer_no_remember_button(make_runtime):
+    from pocketagent.approvals import Action
+    runtime, bot, http = safety_bot(make_runtime, [])
+    pending = runtime.approvals._new_pending(Action("shell", "Delete", {"command": "rm x"}, scope={}, classes={"delete"}),
+                                             classes={"delete"}, tainted=["read_file(notes.txt)"], source="panel")
+    bot.ask_approval(pending)
+    sent = http.sent[-1][1]
+    labels = [b["text"] for row in sent["reply_markup"]["inline_keyboard"] for b in row]
+    assert "📌 Allow + remember" not in labels and "❌ Deny" in labels
+    assert "deleting files" in sent["text"] and "read_file(notes.txt)" in sent["text"]
+
+
+def test_dur_stops_everything_at_once(make_runtime):
+    stopped = []
+    _, bot, http = safety_bot(make_runtime, stopped)
+    bot.handle(message(OWNER, "/dur"))
+    assert stopped == ["telegram"]
+    assert http.messages_to(OWNER)[-1].startswith("🛑")
+    bot.handle(message(STRANGER, "/dur"))               # strangers cannot stop (or start) anything
+    assert stopped == ["telegram"]
+
+
+def test_rules_command_lists_saved_rules(make_runtime):
+    from pocketagent.approvals import Action
+    runtime, bot, http = safety_bot(make_runtime, [])
+    runtime.approvals.rules.add(Action("shell", "x", {}, scope={"command": "git status", "folder": "C:/w"}))
+    bot.handle(message(OWNER, "/kurallar"))
+    assert "#1 shell" in http.messages_to(OWNER)[-1] and "git status" in http.messages_to(OWNER)[-1]

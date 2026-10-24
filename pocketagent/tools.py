@@ -18,6 +18,11 @@ sees, so writing a new tool is just writing a normal, documented function:
 
 Tools that need the agent's workspace, memory or notifier take a `ctx` parameter
 (a ToolContext); it is filled in automatically and never shown to the model.
+
+Tools that act on the computer are marked @tool(os_access=True): they are hidden and refused
+until the user turns computer use on, and they ask for approval with ctx.approve(Action(...)).
+Tools whose output comes from outside (web pages, files, command output) are marked
+untrusted_output=True: after one of them ran, every action in that turn needs a fresh approval.
 """
 
 import importlib
@@ -28,9 +33,11 @@ import pkgutil
 import re
 import types
 import typing
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
+
+from pocketagent.approvals import Refused, Stopped
 
 MAX_RESULT_CHARS = 6000
 _JSON_TYPES = {str: "string", int: "integer", float: "number", bool: "boolean", list: "array", dict: "object"}
@@ -43,6 +50,23 @@ class ToolContext:
     reminders: Any = None     # ReminderStore
     chat_id: str = "terminal"
     decisions: Any = None     # DecisionLog
+    approvals: Any = None     # ApprovalEngine
+    audit: Any = None         # AuditLog
+    source: str = ""          # where the request came from: panel, telegram, terminal
+    computer_use: bool = False
+    generation: int | None = None                        # for the stop button (see ApprovalEngine)
+    tainted_by: list = field(default_factory=list)      # untrusted content read during this turn
+
+    def approve(self, action) -> str:
+        """Ask the user (or a saved rule) before acting on the computer; raises Refused or Stopped."""
+        if self.approvals is None:
+            raise Refused("there is no approval engine, so nothing may run on the computer")
+        return self.approvals.request(action, tainted=self.tainted_by, source=self.source,
+                                      generation=self.generation)
+
+    def check_stop(self) -> None:
+        if self.approvals is not None:
+            self.approvals.check(self.generation)
 
 
 @dataclass
@@ -53,16 +77,21 @@ class Tool:
     func: Callable
     skill: str
     wants_context: bool
+    os_access: bool = False          # acts on the computer: needs computer use + approval
+    untrusted_output: bool = False   # returns outside content (web, files, command output)
 
     def schema(self) -> dict:
         return {"type": "function",
                 "function": {"name": self.name, "description": self.description, "parameters": self.parameters}}
 
 
-def tool(func: Callable) -> Callable:
-    """Mark a function as a tool the agent may call."""
-    func.__pocket_tool__ = True
-    return func
+def tool(func: Callable | None = None, *, os_access: bool = False, untrusted_output: bool = False):
+    """Mark a function as a tool the agent may call: @tool, or @tool(os_access=True, ...)."""
+    def mark(f: Callable) -> Callable:
+        f.__pocket_tool__ = True
+        f.__pocket_os_access__, f.__pocket_untrusted__ = os_access, untrusted_output
+        return f
+    return mark(func) if func is not None else mark
 
 
 def _parse_docstring(doc: str) -> tuple[str, dict[str, str]]:
@@ -105,7 +134,9 @@ def build_tool(func: Callable, skill: str) -> Tool:
             required.append(name)
     return Tool(name=func.__name__, description=summary or func.__name__,
                 parameters={"type": "object", "properties": properties, "required": required},
-                func=func, skill=skill, wants_context=wants_context)
+                func=func, skill=skill, wants_context=wants_context,
+                os_access=getattr(func, "__pocket_os_access__", False),
+                untrusted_output=getattr(func, "__pocket_untrusted__", False))
 
 
 class ToolRegistry:
@@ -142,8 +173,9 @@ class ToolRegistry:
                 self.errors.append(f"{path.name}: {type(error).__name__}: {error}")
 
     # ---------- for the model ----------
-    def schemas(self) -> list[dict]:
-        return [t.schema() for t in self.tools.values()]
+    def schemas(self, computer_use: bool = True) -> list[dict]:
+        """The tools the model may see; tools that act on the computer only when computer use is on."""
+        return [t.schema() for t in self.tools.values() if computer_use or not t.os_access]
 
     def describe_for_prompt(self) -> str:
         """Text description of the tools, for models without native tool calling."""
@@ -152,9 +184,24 @@ class ToolRegistry:
 
     # ---------- running ----------
     def call(self, name: str, arguments: dict, ctx: ToolContext) -> str:
+        """Run a tool for the model. Every call is written to the audit log (when there is one)."""
         t = self.tools.get(name)
+        after_untrusted = bool(ctx.tainted_by)       # was this call made after reading outside content?
+        text = self._call(t, name, arguments, ctx)
+        if t is not None and t.untrusted_output:
+            first = next(iter(arguments.values()), "")
+            ctx.tainted_by.append(f"{name}({str(first)[:80]})")
+        if ctx.audit is not None:
+            ctx.audit.write("tool", tool=name, args=arguments, result=text, source=ctx.source,
+                            tainted=after_untrusted)
+        return text
+
+    def _call(self, t: Tool | None, name: str, arguments: dict, ctx: ToolContext) -> str:
         if t is None:
             return f"Error: there is no tool called '{name}'. Available: {', '.join(self.tools)}"
+        if t.os_access and not ctx.computer_use:
+            return ("Not done: computer use is off (safe mode). Tell the user they can turn it on in the panel "
+                    "if they want you to act on the computer.")
         allowed = t.parameters["properties"]
         missing = [p for p in t.parameters["required"] if p not in arguments]
         if missing:
@@ -164,6 +211,10 @@ class ToolRegistry:
             kwargs["ctx"] = ctx
         try:
             result = t.func(**kwargs)
+        except Stopped:
+            raise                    # the user pressed stop: end the whole turn
+        except Refused as error:
+            return f"Not done: {error}. Do not try again unless the user asks."
         except Exception as error:   # report the problem to the model instead of crashing
             return f"Error while running {name}: {type(error).__name__}: {error}"
         text = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False, default=str)

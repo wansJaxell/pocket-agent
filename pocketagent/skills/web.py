@@ -43,7 +43,7 @@ def html_to_text(page: str) -> str:
     return re.sub(r"\n\s*\n+", "\n\n", re.sub(r"[ \t]+", " ", text)).strip()
 
 
-@tool
+@tool(untrusted_output=True)
 def fetch_webpage(url: str) -> str:
     """Download a web page and return its readable text.
 
@@ -83,7 +83,7 @@ def parse_search_results(page: str, limit: int = 5) -> list[dict]:
     return results
 
 
-@tool
+@tool(untrusted_output=True)
 def web_search(query: str) -> str:
     """Search the web and return the top results (title, link, short text).
 

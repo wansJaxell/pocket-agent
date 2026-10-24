@@ -64,12 +64,18 @@ ROUTES = {
     ("POST", "lock"): lambda r: (r.app.logout(r.session), {"_session": None})[1],
     ("POST", "vault/forget"): lambda r: r.app.forget_vault(),
     ("POST", "autostart"): lambda r: r.app.set_autostart(r.body.get("enabled") is True),
+    ("POST", "stop"): lambda r: r.app.emergency_stop("panel"),
+    ("POST", "computer_use"): lambda r: r.app.set_computer_use(r.body.get("enabled") is True),
+    ("POST", "approvals/answer"): lambda r: r.app.answer_approval(r.text("id"), r.body.get("approve") is True,
+                                                                  r.body.get("remember") is True),
+    ("POST", "rules/delete"): lambda r: r.app.delete_rule(r.body.get("id")),
     ("POST", "chat"): lambda r: r.app.chat(r.text("text")),
     ("POST", "chat/reset"): lambda r: r.app.reset_chat(),
 }
 
-# what a browser may do before it gives the panel password (locked mode)
-OPEN_WHEN_LOCKED = {("GET", "state"), ("POST", "unlock"), ("POST", "vault/forget"), ("POST", "language")}
+# what a browser may do before it gives the panel password (locked mode); stop always works
+OPEN_WHEN_LOCKED = {("GET", "state"), ("POST", "unlock"), ("POST", "vault/forget"), ("POST", "language"),
+                    ("POST", "stop")}
 
 
 class _Server(ThreadingHTTPServer):

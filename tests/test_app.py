@@ -140,3 +140,64 @@ def test_chat_without_a_brain_fails_politely():
     app, _ = make_app()
     job = wait_for(app.chat("hello"), app)
     assert job["status"] == "failed" and "panel" in job["error"]
+
+
+# ---------- computer use, approvals, stop ----------
+def test_computer_use_is_off_until_the_user_turns_it_on(home):
+    app, _ = make_app()
+    assert app.state()["computer_use"] is False
+    app.set_computer_use(True)
+    assert app.config.computer_use and cfg.load().computer_use
+    assert app.runtime.audit.recent()[-1]["event"] == "computer_use"
+
+
+def test_stop_cancels_jobs_denies_approvals_and_turns_computer_use_off(home):
+    import threading
+    from pocketagent.approvals import Action, Stopped
+    app, _ = make_app()
+    app.set_computer_use(True)
+    release = threading.Event()
+    app.jobs.submit("busy", release.wait)
+    waiting = app.jobs.submit("later", lambda: "never")
+    outcome = []
+
+    def turn(generation=app.runtime.approvals.generation):
+        try:
+            app.runtime.approvals.request(Action("shell", "x", {"command": "dir"}, scope={"command": "dir"}),
+                                          generation=generation)
+        except Stopped:
+            outcome.append("stopped")
+    worker = threading.Thread(target=turn)
+    worker.start()
+    while not app.state()["approvals"]:
+        pass
+    summary = app.emergency_stop("panel")
+    worker.join(5)
+    release.set()
+    assert summary["jobs"] == 1 and summary["approvals"] == 1
+    assert waiting.status == "cancelled" and outcome == ["stopped"]
+    assert app.config.computer_use is False and cfg.load().computer_use is False
+    assert any(e["event"] == "stop" for e in app.runtime.audit.recent())
+
+
+def test_approvals_and_rules_from_the_panel(home):
+    import threading
+    from pocketagent.approvals import Action
+    app, _ = make_app()
+    app.set_computer_use(True)
+    action = Action("shell", "Run", {"command": "git status"}, scope={"command": "git status"})
+    result = []
+    worker = threading.Thread(target=lambda: result.append(app.runtime.approvals.request(action)))
+    worker.start()
+    while not app.state()["approvals"]:
+        pass
+    pending = app.state()["approvals"][0]
+    assert pending["params"] == {"command": "git status"} and pending["can_remember"]
+    app.answer_approval(pending["id"], True, True)
+    worker.join(5)
+    rules = app.state()["rules"]
+    assert result == ["approved"] and rules[0]["scope"] == {"command": "git status"}
+    app.delete_rule(rules[0]["id"])
+    assert app.state()["rules"] == []
+    with pytest.raises(PanelError):
+        app.delete_rule(rules[0]["id"])

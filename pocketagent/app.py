@@ -16,6 +16,7 @@ import requests
 from pocketagent import __version__, autostart, vault
 from pocketagent import config as cfg
 from pocketagent.agent import Agent
+from pocketagent.approvals import ApprovalEngine, AuditLog, RuleStore
 from pocketagent.config import BrainConfig, Config, TelegramConfig
 from pocketagent.jobs import JobQueue
 from pocketagent.llm import PROVIDERS, Brain, BrainError, Router, brain_label, list_models, probe
@@ -41,9 +42,14 @@ class Runtime:
         self.reminders = ReminderStore(memory)
         self.identity = IdentityStore(memory, default_name=config.agent_name)
         self.decisions = DecisionLog(memory)
+        self.rules = RuleStore(memory)
+        self.audit = AuditLog(cfg.logs_dir(), echo=True)
+        self.approvals = ApprovalEngine(self.rules, self.audit, enabled=lambda: config.computer_use,
+                                        timeout=config.approval_timeout)
         self.agent = Agent(config, brain or Router(config, http=http), self.registry, self.conversations,
                            self.notes, self.reminders, cfg.workspace_dir(),
-                           identity=self.identity, decisions=self.decisions)
+                           identity=self.identity, decisions=self.decisions,
+                           approvals=self.approvals, audit=self.audit)
 
 
 def start_reminder_loop(runtime: Runtime, notify, stop: threading.Event) -> None:
@@ -82,6 +88,9 @@ class App:
         self._services = threading.Event()
         self._stop = threading.Event()
         self.sessions: set[str] = set()                   # browsers that gave the panel password
+        approvals = self.runtime.approvals                # approval requests also go to Telegram
+        approvals.notifiers.append(lambda pending: self.bot and self.bot.ask_approval(pending))
+        approvals.resolved.append(lambda pending: self.bot and self.bot.approval_resolved(pending))
 
     def save(self) -> None:
         with self.lock:
@@ -108,6 +117,10 @@ class App:
             "autostart": {"supported": autostart.supported(), "enabled": autostart.is_enabled()},
             "setup": {"brain": c.brain_ready, "telegram": c.telegram_ready},
             "memory": {"notes": len(self.runtime.notes.all()), "decisions": len(self.runtime.decisions.all())},
+            "computer_use": c.computer_use,
+            "approvals": self.runtime.approvals.waiting(),
+            "rules": self.runtime.rules.all(),
+            "audit": self.runtime.audit.recent(40),
             "jobs": self.jobs.recent(10),
             "notices": list(self.notices),
         }
@@ -305,7 +318,9 @@ class App:
                 return
             t, r = self.config.telegram, self.runtime
             self._bot_stop = threading.Event()
-            self.bot = TelegramBot(t.token, t.owner_chat_id, r.agent, r.registry, r.conversations, jobs=self.jobs)
+            self.bot = TelegramBot(t.token, t.owner_chat_id, r.agent, r.registry, r.conversations, jobs=self.jobs,
+                                   approvals=r.approvals, on_stop=self.emergency_stop,
+                                   language=lambda: self.config.language)
             threading.Thread(target=self.bot.run_forever, args=(self._bot_stop,), daemon=True).start()
             self.telegram_status = "connected"
 
@@ -404,7 +419,7 @@ class App:
         return self.jobs.submit(f"panel: {text[:40]}", lambda: self._answer(chat_id, text)).as_dict()
 
     def _answer(self, chat_id: str, text: str) -> dict:
-        answer = self.runtime.agent.run(chat_id, text)
+        answer = self.runtime.agent.run(chat_id, text, source="panel")
         return {"text": answer.text, "brain": answer.brain, "tools": answer.tools, "skipped": answer.skipped}
 
     def job(self, job_id) -> dict:
@@ -418,6 +433,44 @@ class App:
 
     def reset_chat(self, chat_id: str = "panel") -> None:
         self.runtime.conversations.reset(chat_id)
+
+    # ---------- computer use: approvals, rules, stop ----------
+    def set_computer_use(self, enabled: bool, by: str = "panel") -> None:
+        with self.lock:
+            self.config.computer_use = bool(enabled)
+            self.save()
+        self.runtime.audit.write("computer_use", enabled=bool(enabled), by=by)
+
+    def answer_approval(self, pending_id, approve: bool, remember: bool = False) -> None:
+        if not self.runtime.approvals.answer(str(pending_id), approve, remember, by="panel"):
+            raise PanelError("This request is no longer waiting for an answer.")
+
+    def delete_rule(self, rule_id) -> None:
+        try:
+            removed = self.runtime.rules.remove(int(rule_id))
+        except (TypeError, ValueError):
+            removed = False
+        if not removed:
+            raise PanelError("There is no such rule.")
+        self.runtime.audit.write("rule_deleted", rule=int(rule_id), by="panel")
+
+    def emergency_stop(self, by: str = "panel") -> dict:
+        """Stop everything now: waiting jobs, the running turn, approval requests and processes.
+        Computer use is switched off and stays off until the user turns it on again."""
+        waiting = self.jobs.cancel_waiting()
+        running = self.jobs.cancel_running()
+        summary = {"jobs": waiting, "running": running, **self.runtime.approvals.stop_everything(by)}
+        with self.lock:
+            self.config.computer_use = False
+            self.save()
+        self.notice("🛑 Stopped. Computer use is off.")
+        print(f"[stop] by {by}: {summary}")
+        if self.bot and by != "telegram":
+            try:
+                self.bot.send(self.bot.owner, self.bot.stopped_text(summary))
+            except Exception:
+                pass
+        return summary
 
     # ---------- background services ----------
     def start_services(self) -> None:

@@ -68,6 +68,16 @@ class JobQueue:
                     count += 1
         return count
 
+    def cancel_running(self) -> bool:
+        """Mark the running job as cancelled at once (the stop button ends its work separately)."""
+        with self._lock:
+            job = self.current
+            if job is None or job.status != "running":
+                return False
+            job.status = "cancelled"
+            job.done.set()
+            return True
+
     def _work(self) -> None:
         while True:
             job = self._queue.get()

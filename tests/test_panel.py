@@ -106,3 +106,10 @@ def test_chat_round_trip(panel, client):
     assert state["result"]["text"] == "Selam!" and state["result"]["brain"] == "Groq · llama"
     history = api(client, panel, "GET", "api/history").json()
     assert history[-1] == {"role": "assistant", "content": "Selam!"}
+
+
+def test_the_stop_button_works_even_on_a_locked_panel(panel, client):
+    panel.app.config.access = "locked"          # pretend: locked, and this browser has no session
+    reply = api(client, panel, "POST", "api/stop")
+    assert reply.status_code == 200 and reply.json()["approvals"] == 0
+    assert api(client, panel, "POST", "api/computer_use", {"enabled": True}).status_code == 401

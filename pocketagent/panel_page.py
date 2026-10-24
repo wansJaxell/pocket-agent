@@ -79,6 +79,20 @@ form.send textarea{flex:1;resize:vertical;min-height:46px;max-height:40vh}
 border-radius:10px;background:var(--text);color:var(--bg);opacity:0;transition:opacity .2s;pointer-events:none;z-index:20}
 #toast.show{opacity:1}
 #toast.bad{background:var(--bad);color:#fff}
+button.stop{font:inherit;font-weight:800;letter-spacing:.06em;font-size:16px;padding:9px 22px;border-radius:10px;
+border:0;background:#d32f2f;color:#fff;cursor:pointer;box-shadow:0 2px 0 #8e1b1b}
+button.stop:active{transform:translateY(1px)}
+#approvals{max-width:980px;margin:0 auto;padding:0 16px}
+.approval{border:2px solid var(--warn);background:var(--warn-bg)}
+.approval .params{font-family:ui-monospace,Consolas,monospace;font-size:13.5px;white-space:pre-wrap;overflow-wrap:anywhere;
+background:var(--card);border:1px solid var(--line);border-radius:8px;padding:8px 10px;margin:8px 0}
+.switch{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+.state-on{color:var(--warn);font-weight:700}
+.state-off{color:var(--ok);font-weight:700}
+.list{list-style:none;margin:6px 0;padding:0}
+.list li{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;border-bottom:1px solid var(--line);padding:6px 0}
+.list .what{flex:1 1 300px;overflow-wrap:anywhere;font-family:ui-monospace,Consolas,monospace;font-size:13px}
+.list .when{color:var(--muted);font-size:12.5px;white-space:nowrap}
 label.choice{display:flex;gap:8px;align-items:center;border:1px solid var(--line);border-radius:10px;padding:8px 12px;cursor:pointer}
 label.choice input{margin:0}
 textarea.wide{width:100%;min-height:70px;resize:vertical}
@@ -91,6 +105,7 @@ textarea.wide{width:100%;min-height:70px;resize:vertical}
 <header>
   <div class="brand"><span aria-hidden="true">🤖</span><b id="agent-name">PocketAgent</b><span class="chips" id="chips"></span></div>
   <div class="tools">
+    <button class="stop" id="stop" type="button" data-t="stop"></button>
     <button class="btn small" id="lock-now" type="button" data-t="access.lock_now" hidden></button>
     <select id="lang" aria-label="Language"><option value="tr">TR</option><option value="en">EN</option></select>
   </div>
@@ -106,9 +121,11 @@ textarea.wide{width:100%;min-height:70px;resize:vertical}
     <button class="btn small" type="button" id="forgot" data-t="lock.forgot"></button>
   </article>
 </section>
+<section id="approvals" aria-live="assertive"></section>
 <nav id="tabs">
   <button data-tab="setup" data-t="tab.setup"></button>
   <button data-tab="chat" data-t="tab.chat"></button>
+  <button data-tab="safety" data-t="tab.safety"></button>
 </nav>
 <main>
   <section id="tab-setup" hidden>
@@ -152,6 +169,26 @@ textarea.wide{width:100%;min-height:70px;resize:vertical}
       <label class="row"><input type="checkbox" id="autostart"><span data-t="auto.label"></span></label>
       <p class="hint" id="autostart-hint"></p>
       <p class="hint" id="memory"></p>
+    </article>
+  </section>
+  <section id="tab-safety" hidden>
+    <article class="card">
+      <h2 data-t="cu.title"></h2>
+      <div class="switch"><span id="cu-state"></span><button class="btn" id="cu-toggle" type="button"></button></div>
+      <p class="hint" data-t="cu.always"></p>
+    </article>
+    <article class="card">
+      <h2 data-t="rules.title"></h2>
+      <p class="hint" data-t="rules.hint"></p>
+      <ul class="list" id="rules"></ul>
+    </article>
+    <article class="card">
+      <h2 data-t="jobs.title"></h2>
+      <ul class="list" id="jobs"></ul>
+    </article>
+    <article class="card">
+      <h2 data-t="audit.title"></h2>
+      <ul class="list" id="audit"></ul>
     </article>
   </section>
   <section id="tab-chat" hidden>
@@ -211,7 +248,20 @@ en: {
  "step.more": "More", "auto.label": "Start PocketAgent when Windows starts",
  "auto.hint": "Adds a shortcut to your Startup folder. The agent window stays visible on the taskbar.",
  "auto.unsupported": "Only available on Windows.",
- "memory.line": "Memory (stays the same whichever brain answers): {notes} notes, {decisions} decisions."
+ "memory.line": "Memory (stays the same whichever brain answers): {notes} notes, {decisions} decisions.",
+ "stop": "STOP", "stop.done": "Stopped everything. Computer use is off.", "tab.safety": "Safety",
+ "cu.title": "Computer use", "cu.off": "OFF: safe mode, chat only. Nothing runs on this computer.",
+ "cu.on": "ON: the agent may run commands and open web pages, and you approve every action.",
+ "cu.turn_on": "Turn on", "cu.turn_off": "Turn off",
+ "cu.always": "Always asked, never saved as a rule: spending money, deleting files, sending messages, passwords and keys, and anything that comes after the agent read a web page, a file or command output. There is no limit on approved actions. STOP (or /dur in Telegram) ends everything at once and turns computer use off.",
+ "ap.title": "Approval needed", "ap.from": "asked from", "ap.once": "✅ Allow once", "ap.rule": "📌 Allow + remember",
+ "ap.deny": "❌ Deny", "ap.always": "⚠️ Always asks:", "ap.after": "⚠️ Comes after reading untrusted content:",
+ "rules.title": "Saved approval rules", "rules.none": "No saved rules.", "rules.delete": "Delete",
+ "rules.hint": "A rule allows one exact action again: the same command in the same folder, or the same site. Anything else is asked again.",
+ "jobs.title": "Background jobs", "jobs.none": "No jobs yet.", "audit.title": "Audit log (newest first)",
+ "audit.none": "Nothing yet.", "chat.stopped": "🛑 Stopped.",
+ "class.money": "spending money", "class.delete": "deleting files", "class.message": "sending a message",
+ "class.secrets": "passwords or keys", "class.untrusted": "after web/file content"
 },
 tr: {
  "tab.setup": "Kurulum", "tab.chat": "Sohbet", "optional": "isteğe bağlı", "save": "Kaydet", "saved": "Kaydedildi ✓",
@@ -254,7 +304,20 @@ tr: {
  "step.more": "Diğer", "auto.label": "Windows açılışında PocketAgent'ı başlat",
  "auto.hint": "Başlangıç klasörüne bir kısayol ekler. Ajan penceresi görev çubuğunda görünür kalır.",
  "auto.unsupported": "Sadece Windows'ta kullanılabilir.",
- "memory.line": "Hafıza (hangi beyin cevap verirse versin aynı kalır): {notes} not, {decisions} karar."
+ "memory.line": "Hafıza (hangi beyin cevap verirse versin aynı kalır): {notes} not, {decisions} karar.",
+ "stop": "DURDUR", "stop.done": "Her şey durduruldu. Bilgisayar kullanımı kapalı.", "tab.safety": "Güvenlik",
+ "cu.title": "Bilgisayar kullanımı", "cu.off": "KAPALI: güvenli mod, sadece sohbet. Bu bilgisayarda hiçbir şey çalışmaz.",
+ "cu.on": "AÇIK: ajan komut çalıştırabilir ve web sayfası açabilir; her eylemi sen onaylarsın.",
+ "cu.turn_on": "Aç", "cu.turn_off": "Kapat",
+ "cu.always": "Her zaman sorulur, asla kural olarak kaydedilmez: para harcama, dosya silme, mesaj gönderme, şifre ve anahtar işlemleri ve ajanın bir web sayfası, dosya ya da komut çıktısı okuduktan sonra yapmak istediği her şey. Onaylanan eylemlerde üst sınır yoktur. DURDUR (ya da Telegram'da /dur) her şeyi anında keser ve bilgisayar kullanımını kapatır.",
+ "ap.title": "Onay gerekiyor", "ap.from": "isteyen", "ap.once": "✅ Bir kez izin ver", "ap.rule": "📌 İzin ver + hatırla",
+ "ap.deny": "❌ Reddet", "ap.always": "⚠️ Her zaman sorulur:", "ap.after": "⚠️ Güvenilmeyen içerik okunduktan sonra geldi:",
+ "rules.title": "Kayıtlı onay kuralları", "rules.none": "Kayıtlı kural yok.", "rules.delete": "Sil",
+ "rules.hint": "Bir kural tek bir eylemin aynısına yeniden izin verir: aynı klasörde aynı komut ya da aynı site. Farklı olan her şey yeniden sorulur.",
+ "jobs.title": "Arka plan işleri", "jobs.none": "Henüz iş yok.", "audit.title": "Denetim günlüğü (en yeni üstte)",
+ "audit.none": "Henüz bir şey yok.", "chat.stopped": "🛑 Durduruldu.",
+ "class.money": "para harcama", "class.delete": "dosya silme", "class.message": "mesaj gönderme",
+ "class.secrets": "şifre/anahtar", "class.untrusted": "web/dosya içeriğinden sonra"
 }};
 let lang = document.documentElement.lang || (navigator.language.toLowerCase().startsWith("tr") ? "tr" : "en");
 let S = null, selected = null, tab = null, models = {}, local = null;
@@ -505,6 +568,64 @@ function renderMore() {
   $("memory").textContent = t("memory.line").replace("{notes}", S.memory.notes).replace("{decisions}", S.memory.decisions);
 }
 
+// ---------- approvals, safety ----------
+function renderApprovals() {
+  if (!changed("approvals", S.approvals || [])) return;
+  fill($("approvals"), (S.approvals || []).map(p => {
+    const answer = (approve, remember) => act(null, async () => {
+      await api("approvals/answer", {id: p.id, approve, remember});
+      await refresh();
+    });
+    const always = p.classes.filter(c => c !== "untrusted").map(c => t("class." + c));
+    return h("article", {class: "card approval"},
+      h("h2", {}, "🔐 " + t("ap.title"), h("span", {class: "tag", text: t("ap.from") + ": " + (p.source || "?")})),
+      h("p", {text: p.summary}),
+      h("div", {class: "params", text: Object.entries(p.params).map(([k, v]) => k + ": " + v).join("\n")}),
+      always.length ? h("p", {class: "note warn", text: t("ap.always") + " " + always.join(", ")}) : null,
+      p.tainted.length ? h("p", {class: "note warn", text: t("ap.after") + " " + p.tainted.join(", ")}) : null,
+      h("div", {class: "row"},
+        h("button", {class: "btn primary", type: "button", text: t("ap.once"), onclick: () => answer(true, false)}),
+        p.can_remember ? h("button", {class: "btn", type: "button", text: t("ap.rule"), onclick: () => answer(true, true)}) : null,
+        h("button", {class: "btn", type: "button", text: t("ap.deny"), onclick: () => answer(false, false)})));
+  }));
+}
+
+function describe(entry) {
+  const json = value => JSON.stringify(value || {});
+  if (entry.event === "tool") return "🔧 " + entry.tool + " " + json(entry.args) + (entry.tainted ? " ⚠️" : "");
+  if (entry.event === "approval") return "🔐 " + entry.decision + " · " + entry.kind + " " + json(entry.params) + (entry.by ? " · " + entry.by : "");
+  if (entry.event === "stop") return "🛑 stop · " + entry.by;
+  if (entry.event === "computer_use") return "💻 computer use " + (entry.enabled ? "ON" : "OFF") + " · " + entry.by;
+  return entry.event + " " + json(Object.fromEntries(Object.entries(entry).filter(([k]) => k !== "time" && k !== "event")));
+}
+
+function renderSafety() {
+  const on = S.computer_use;
+  $("cu-state").className = on ? "state-on" : "state-off";
+  $("cu-state").textContent = t(on ? "cu.on" : "cu.off");
+  $("cu-toggle").textContent = t(on ? "cu.turn_off" : "cu.turn_on");
+  if (changed("rules", S.rules)) {
+    fill($("rules"), S.rules.length ? S.rules.map(r => h("li", {},
+      h("span", {class: "what", text: "#" + r.id + " " + r.kind + ": " + Object.entries(r.scope).map(([k, v]) => k + "=" + v).join(", ")}),
+      h("span", {class: "when", text: r.created.replace("T", " ")}),
+      h("button", {class: "btn small", type: "button", text: t("rules.delete"), onclick: () => act(null, async () => {
+        await api("rules/delete", {id: r.id});
+        await refresh();
+      })}))) : h("li", {class: "hint", text: t("rules.none")}));
+  }
+  if (changed("jobs", S.jobs)) {
+    fill($("jobs"), S.jobs.length ? S.jobs.map(j => h("li", {},
+      h("span", {class: "what", text: j.label}), h("span", {class: "tag", text: j.status}),
+      h("span", {class: "when", text: j.created.replace("T", " ")}))) : h("li", {class: "hint", text: t("jobs.none")}));
+  }
+  if (changed("audit", S.audit)) {
+    const entries = [...S.audit].reverse();
+    fill($("audit"), entries.length ? entries.map(e => h("li", {},
+      h("span", {class: "when", text: e.time.replace("T", " ")}), h("span", {class: "what", text: describe(e)})))
+      : h("li", {class: "hint", text: t("audit.none")}));
+  }
+}
+
 // ---------- locked panel ----------
 function showLock(locked) {
   $("lock").hidden = !locked;
@@ -550,6 +671,9 @@ async function send(text) {
       waiting.textContent = job.result.text;
       const meta = metaOf(job.result);
       if (meta) waiting.append(h("div", {class: "meta", text: meta}));
+    } else if (job.status === "cancelled") {
+      waiting.classList.add("notice");
+      waiting.textContent = t("chat.stopped");
     } else {
       waiting.classList.add("notice");
       waiting.textContent = "⚠️ " + (job.error || job.status);
@@ -570,8 +694,10 @@ function renderNotices() {
 function render() {
   renderHeader();
   showLock(!!S.locked);
-  if (S.locked) return;
-  renderProviders(); renderBrains(); renderTelegram(); renderName(); renderAccess(); renderMore(); renderNotices();
+  if (S.locked) return fill($("approvals"));
+  renderApprovals();
+  renderProviders(); renderBrains(); renderTelegram(); renderName(); renderAccess(); renderMore(); renderSafety();
+  renderNotices();
 }
 
 async function refresh() {
@@ -614,6 +740,15 @@ $("save-access").addEventListener("click", () => act($("save-access"), async () 
 $("autostart").addEventListener("change", () => act($("autostart"), async () => {
   S.autostart = await api("autostart", {enabled: $("autostart").checked});
   renderMore();
+}));
+$("stop").addEventListener("click", () => act($("stop"), async () => {
+  await api("stop", {});
+  toast(t("stop.done"));
+  await refresh();
+}));
+$("cu-toggle").addEventListener("click", () => act($("cu-toggle"), async () => {
+  await api("computer_use", {enabled: !S.computer_use});
+  await refresh();
 }));
 $("lock-now").addEventListener("click", () => act($("lock-now"), async () => {
   await api("lock", {});

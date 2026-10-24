@@ -36,6 +36,11 @@ def memory_dir() -> Path:
     return home_dir() / "memory"
 
 
+def logs_dir() -> Path:
+    """The audit log: every action and every approval decision."""
+    return home_dir() / "logs"
+
+
 def user_skills_dir() -> Path:
     """Drop your own skill files (*.py) here; they are loaded at start-up."""
     return home_dir() / "skills"
@@ -72,6 +77,8 @@ class Config:
     panel_port: int = 8765
     access: str = "open"            # "open": no password; "locked": keys encrypted with the panel password
     vault: dict | None = None       # the encrypted keys and token (locked mode only)
+    computer_use: bool = False      # False = safe mode: chat only, nothing runs on the computer
+    approval_timeout: int = 600     # seconds to wait for a yes/no before refusing
 
     @property
     def brain_ready(self) -> bool:

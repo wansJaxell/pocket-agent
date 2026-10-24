@@ -17,7 +17,7 @@ def _safe_path(ctx: ToolContext, relative: str) -> Path:
     return target
 
 
-@tool
+@tool(untrusted_output=True)
 def list_files(ctx: ToolContext, folder: str = ".") -> str:
     """List files in the workspace folder.
 
@@ -34,7 +34,7 @@ def list_files(ctx: ToolContext, folder: str = ".") -> str:
                      ("" if p.is_dir() else f" ({p.stat().st_size} bytes)") for p in entries)
 
 
-@tool
+@tool(untrusted_output=True)
 def read_file(ctx: ToolContext, path: str) -> str:
     """Read a text file from the workspace.
 
