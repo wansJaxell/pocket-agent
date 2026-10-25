@@ -33,7 +33,9 @@ you talked about and what you decided together ([how](#one-mind-many-personaliti
 - **English or Turkish** interface (English by default)
 - **Small:** two pure-Python packages (`requests`, and `pypdf` for PDF files), a single executable, 328 tests
 
-<!-- demo video -->
+
+https://github.com/user-attachments/assets/91eecbbf-aee1-4f5e-9102-cbdf9a6a176d
+
 
 ## One mind, many personalities
 
