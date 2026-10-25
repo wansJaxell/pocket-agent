@@ -149,6 +149,7 @@ _SEES = re.compile(r"gemini|gemma-?[34]|vision|[-_.]vl\b|[-_]vl[-_:]|llama-4|lla
 def sees_images(brain: BrainConfig) -> bool:
     """Whether a brain takes pictures: the provider's list said so, or the model is known to."""
     return brain.sees_images or brain.provider == "gemini" or bool(_SEES.search(brain.model))
+WINDOWS = os.name == "nt"        # a flag, so tests can play Windows elsewhere
 VOICE_NOTES = {".mp3", ".ogg", ".oga", ".m4a"}      # what Telegram shows as a voice bubble
 CLASSIC_IMAGE = "https://image.pollinations.ai/prompt/"      # works without a key (rate-limited)
 GATEWAY = "https://gen.pollinations.ai"                      # needs a free key for images
@@ -186,7 +187,7 @@ def piper_dir() -> Path:
 
 
 def piper_program() -> Path:
-    return piper_dir() / "piper" / ("piper.exe" if os.name == "nt" else "piper")
+    return piper_dir() / "piper" / ("piper.exe" if WINDOWS else "piper")
 
 
 def speakable(text: str, limit: int = 1200) -> str:
@@ -205,7 +206,7 @@ def speakable(text: str, limit: int = 1200) -> str:
 
 def _saved_windows_path() -> str:
     """The PATH as Windows saved it: it includes programs installed after PocketAgent started (winget)."""
-    if os.name != "nt":
+    if os.name != "nt":            # the real system: winreg exists only there
         return ""
     import winreg
     folders = []
@@ -286,7 +287,7 @@ class Studio:
         if kind == "speech":
             if self.piper_status()["installed"]:
                 return {"provider": "piper", "model": "", "voice": "auto", "auto": True}
-            if os.name == "nt" or os.path.exists("/usr/bin/say"):
+            if WINDOWS or os.path.exists("/usr/bin/say"):
                 return {"provider": "local", "model": "", "voice": "", "auto": True}
         return {}
 
@@ -400,7 +401,7 @@ class Studio:
         return preferred if preferred in installed or not ordered else ordered[0]
 
     def _local_speech(self, text: str, voice: str) -> tuple[bytes, str]:
-        if os.name == "nt":
+        if WINDOWS:
             extension = ".wav"
         elif os.path.exists("/usr/bin/say"):     # macOS
             extension = ".aiff"
@@ -454,7 +455,7 @@ class Studio:
         voices = piper_dir() / "voices"
         installed = sorted(p.name[:-5] for p in voices.glob("*.onnx")) if voices.is_dir() else []
         return {"installed": piper_program().exists() and bool(installed), "voices": installed,
-                "supported": os.name == "nt"}
+                "supported": WINDOWS}
 
     def _download(self, url: str, progress=None) -> bytes:
         try:
@@ -474,7 +475,7 @@ class Studio:
 
     def install_piper(self, voice: str = DEFAULT_PIPER_VOICE, progress=None) -> dict:
         """Download Piper and a voice into the PocketAgent folder (Windows)."""
-        if os.name != "nt":
+        if not WINDOWS:
             raise MediaError("installing Piper from the panel works on Windows for now")
         if voice not in PIPER_VOICES:
             raise MediaError(f"unknown Piper voice '{voice}'")

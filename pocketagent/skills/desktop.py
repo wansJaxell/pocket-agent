@@ -46,8 +46,11 @@ def _powershell(script: str, **env) -> subprocess.CompletedProcess:
                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
 
 
+WINDOWS = os.name == "nt"        # a flag, so tests can play Windows elsewhere
+
+
 def _windows_only() -> str:
-    return "" if os.name == "nt" else "This works on Windows for now."
+    return "" if WINDOWS else "This works on Windows for now."
 
 
 @tool(os_access=True)

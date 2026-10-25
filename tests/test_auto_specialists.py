@@ -58,7 +58,7 @@ def piper_runner(runs):
 
 
 def test_piper_speaks_each_answer_in_its_own_language(home, monkeypatch):
-    monkeypatch.setattr(media.os, "name", "nt")
+    monkeypatch.setattr(media, "WINDOWS", True)
     install_voices(home, "tr_TR-dfki-medium", "en_US-amy-medium")
     config, runs = Config(), []
     config.media["speech"] = {"provider": "piper", "voice": "auto", "model": ""}
@@ -71,7 +71,7 @@ def test_piper_speaks_each_answer_in_its_own_language(home, monkeypatch):
 
 
 def test_windows_voices_are_chosen_by_language_too(monkeypatch):
-    monkeypatch.setattr(media.os, "name", "nt")
+    monkeypatch.setattr(media, "WINDOWS", True)
     seen = []
 
     def sapi(argv, env, **kwargs):
@@ -122,7 +122,7 @@ def test_a_choice_made_in_the_panel_wins_over_the_automatic_one():
 
 
 def test_speech_uses_piper_when_installed_otherwise_the_computers_voice(home, monkeypatch):
-    monkeypatch.setattr(media.os, "name", "nt")
+    monkeypatch.setattr(media, "WINDOWS", True)
     assert Studio(Config()).choice("speech")["provider"] == "local"
     install_voices(home, "tr_TR-dfki-medium")
     assert Studio(Config()).choice("speech") == {"provider": "piper", "model": "", "voice": "auto", "auto": True}

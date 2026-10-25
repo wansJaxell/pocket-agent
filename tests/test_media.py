@@ -123,7 +123,7 @@ def test_pollinations_speech_needs_its_free_key(tmp_path):
 
 
 def test_this_computer_can_speak_offline(tmp_path, monkeypatch):
-    monkeypatch.setattr(media.os, "name", "nt")
+    monkeypatch.setattr(media, "WINDOWS", True)
     calls = []
 
     def fake_powershell(argv, env, **kwargs):
@@ -275,7 +275,7 @@ def piper_web(zip_bytes):
 
 
 def test_piper_is_downloaded_and_unpacked_into_the_pocketagent_folder(home, monkeypatch):
-    monkeypatch.setattr(media.os, "name", "nt")
+    monkeypatch.setattr(media, "WINDOWS", True)
     studio, web, _ = studio_with(*piper_web(make_zip({"piper/piper.exe": b"MZ", "piper/espeak-ng-data/tr": b"x"})))
     studio.install_piper("tr_TR-dfki-medium")
     assert (home / "piper" / "piper" / "piper.exe").read_bytes() == b"MZ"
@@ -284,7 +284,7 @@ def test_piper_is_downloaded_and_unpacked_into_the_pocketagent_folder(home, monk
 
 
 def test_a_piper_archive_cannot_write_outside_its_folder(home, monkeypatch):
-    monkeypatch.setattr(media.os, "name", "nt")
+    monkeypatch.setattr(media, "WINDOWS", True)
     studio, _, _ = studio_with(*piper_web(make_zip({"../../evil.bat": b"bad", "piper/piper.exe": b"MZ"})))
     with pytest.raises(media.MediaError, match="unsafe"):
         studio.install_piper("tr_TR-dfki-medium")
@@ -292,7 +292,7 @@ def test_a_piper_archive_cannot_write_outside_its_folder(home, monkeypatch):
 
 
 def test_piper_speaks_turkish_offline(home, monkeypatch):
-    monkeypatch.setattr(media.os, "name", "nt")
+    monkeypatch.setattr(media, "WINDOWS", True)
     (home / "piper" / "piper").mkdir(parents=True)
     (home / "piper" / "piper" / "piper.exe").write_bytes(b"MZ")
     (home / "piper" / "voices").mkdir()

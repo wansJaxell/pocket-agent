@@ -21,7 +21,7 @@ def ran(monkeypatch):
                 f.write(b"\x89PNG-screen")
         return SimpleNamespace(returncode=0, stdout="kopyalanan metin\r\n", stderr="")
     monkeypatch.setattr(desktop, "run", fake_run)
-    monkeypatch.setattr(desktop.os, "name", "nt")
+    monkeypatch.setattr(desktop, "WINDOWS", True)
     return calls
 
 
