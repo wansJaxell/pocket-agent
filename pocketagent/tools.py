@@ -58,6 +58,7 @@ class ToolContext:
     tainted_by: list = field(default_factory=list)      # untrusted content read during this turn
     studio: Any = None        # media.Studio: the specialists (image, speech, writer)
     tasks: Any = None         # schedule.TaskStore
+    browser: Any = None       # browser_control.BrowserControl: the agent's browser window
     files: list = field(default_factory=list)           # workspace files made for the answer
 
     def approve(self, action) -> str:

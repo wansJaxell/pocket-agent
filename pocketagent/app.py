@@ -26,6 +26,7 @@ from pocketagent.media import MediaError, Studio
 from pocketagent.memory import ConversationStore, DecisionLog, IdentityStore, NoteStore, ReminderStore
 from pocketagent.oauth import authorize_url, exchange_code, make_verifier
 from pocketagent.schedule import TaskStore
+from pocketagent.browser_control import BrowserControl
 from pocketagent.setup_wizard import TELEGRAM_API, detect_local_models, wait_for_owner
 from pocketagent.tools import ToolRegistry
 
@@ -56,10 +57,12 @@ class Runtime:
                                         timeout=config.approval_timeout)
         self.studio = Studio(config, http=http or requests)
         self.tasks = TaskStore(memory)
+        self.browser = BrowserControl(cfg.home_dir() / "browser-profile", track=self.approvals.track)
         self.agent = Agent(config, brain or Router(config, http=http), self.registry, self.conversations,
                            self.notes, self.reminders, cfg.workspace_dir(),
                            identity=self.identity, decisions=self.decisions,
-                           approvals=self.approvals, audit=self.audit, studio=self.studio, tasks=self.tasks)
+                           approvals=self.approvals, audit=self.audit, studio=self.studio, tasks=self.tasks,
+                           browser=self.browser)
 
 
 def start_reminder_loop(runtime: Runtime, notify, stop: threading.Event) -> None:

@@ -72,11 +72,11 @@ class Agent:
     def __init__(self, config: Config, brain: Brain, registry: ToolRegistry, conversations: ConversationStore,
                  notes: NoteStore, reminders: ReminderStore, workspace: Path,
                  identity: IdentityStore | None = None, decisions: DecisionLog | None = None,
-                 approvals=None, audit=None, studio=None, tasks=None):
+                 approvals=None, audit=None, studio=None, tasks=None, browser=None):
         self.config, self.brain, self.registry = config, brain, registry
         self.conversations, self.notes, self.reminders, self.workspace = conversations, notes, reminders, workspace
         self.identity, self.decisions, self.approvals, self.audit = identity, decisions, approvals, audit
-        self.studio, self.tasks = studio, tasks
+        self.studio, self.tasks, self.browser = studio, tasks, browser
 
     def system_prompt(self) -> str:
         """Built from the agent's own files, so it stays the same whichever brain is answering."""
@@ -103,7 +103,7 @@ class Agent:
                           chat_id=str(chat_id), decisions=self.decisions, approvals=self.approvals,
                           audit=self.audit, source=source or str(chat_id), computer_use=self.config.computer_use,
                           generation=self.approvals.generation if self.approvals else None, studio=self.studio,
-                          tasks=self.tasks)
+                          tasks=self.tasks, browser=self.browser)
         messages = ([{"role": "system", "content": self.system_prompt()}]
                     + self.conversations.get(chat_id) + [{"role": "user", "content": text}])
         tools = self.registry.schemas(computer_use=ctx.computer_use)
