@@ -87,7 +87,8 @@ def voice_path(voice: str) -> str:
 
 _STOPWORDS = {
     "tr": "ve bir bu için ile da de değil çok ama gibi olarak olan var yok ne mi sen ben biz",
-    "en": "the and is are to of in that it for with you this not be on have will",
+    "en": "the and is are to of in that it for with you this not be on have will i a an my your we at from by "
+          "can do what here or if so but they was has would there about me all ll",
     "de": "und der die das ist nicht ein eine zu mit ich sie es den von auf für wird",
     "fr": "le la les et est des une un du en que pas pour il fait vous ne au",
     "es": "el la los las y es en que de por un una para con no se del será hará",

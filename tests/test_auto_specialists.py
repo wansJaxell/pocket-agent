@@ -22,6 +22,13 @@ from pocketagent.media import Studio, guess_language, voice_path
     ("Завтра у Києві буде сонячно і тепло, їжте морозиво.", "uk"),
     ("غدا سيكون الطقس مشمسا في عمان", "ar"),
     ("明天北京天气晴朗", "zh"),
+    # short English answers: "a", "o", "I" must not make them Portuguese or Polish
+    ("Sure! I set a reminder for 8 o'clock tomorrow.", "en"),
+    ("I found a cheaper flight at 9 a.m. on Pegasus.", "en"),
+    ("Here's what I can do: read your files, set reminders and search the web.", "en"),
+    ("My name is Pocket. How can I help?", "en"),
+    ("Encontrei um voo mais barato para você amanhã.", "pt"),
+    ("Mam nadzieję, że to jest dobre.", "pl"),
 ])
 def test_the_language_of_an_answer_is_recognised(text, language):
     assert guess_language(text) == language

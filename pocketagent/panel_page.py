@@ -308,8 +308,8 @@ en: {
  "sp.hearing": "👂 Hearing (voice messages)", "sp.vision": "👁 Seeing (photos, screenshots)",
  "sp.hearing_hint": "Voice messages on Telegram are written down, then handled like text. Groq's key is free (step 1).",
  "sp.vision_hint": "Choose a model that can see pictures, e.g. nvidia/nemotron-3.5-super-vl:free or google/gemma-4-31b-it:free on OpenRouter, or gemini-2.5-flash.",
- "svc.groq": "Groq Whisper (free key)", "svc.piper": "Piper: natural voice on this computer (Turkish too, offline)",
- "piper.install": "Install this voice (about 60 MB; Piper itself 22 MB once)", "piper.installing": "Downloading {file}: {done} / {total} MB",
+ "svc.groq": "Groq Whisper (free key)", "svc.piper": "Piper: natural voices on this computer (25 languages, offline)",
+ "piper.install": "Install {voice} (about 60 MB; Piper itself 22 MB once)", "piper.installing": "Downloading {file}: {done} / {total} MB",
  "piper.ready": "Piper is installed:", "piper.windows": "Installing Piper from the panel works on Windows.",
  "vr.label": "Voice replies on Telegram", "vr.off": "Off", "vr.spoken": "When I send a voice message", "vr.always": "Always",
  "vr.hint": "The answer also arrives as a voice message, read by the speech specialist above (MP3 voices show as a voice bubble; WAV voices like Piper's as an audio file unless ffmpeg is installed).",
@@ -402,8 +402,8 @@ tr: {
  "sp.hearing": "👂 Duyma (sesli mesajlar)", "sp.vision": "👁 Görme (fotoğraf, ekran)",
  "sp.hearing_hint": "Telegram'daki sesli mesajlar yazıya çevrilir, sonra yazı gibi işlenir. Groq'un anahtarı ücretsizdir (1. adım).",
  "sp.vision_hint": "Görsel okuyabilen bir model seç, ör. OpenRouter'da nvidia/nemotron-3.5-super-vl:free ya da google/gemma-4-31b-it:free, veya gemini-2.5-flash.",
- "svc.groq": "Groq Whisper (ücretsiz anahtar)", "svc.piper": "Piper: bu bilgisayarda doğal ses (Türkçe de, çevrimdışı)",
- "piper.install": "Bu sesi kur (yaklaşık 60 MB; Piper bir kereliğine 22 MB)", "piper.installing": "{file} indiriliyor: {done} / {total} MB",
+ "svc.groq": "Groq Whisper (ücretsiz anahtar)", "svc.piper": "Piper: bu bilgisayarda doğal sesler (25 dil, çevrimdışı)",
+ "piper.install": "{voice} sesini kur (yaklaşık 60 MB; Piper bir kereliğine 22 MB)", "piper.installing": "{file} indiriliyor: {done} / {total} MB",
  "piper.ready": "Piper kurulu:", "piper.windows": "Piper'ı panelden kurmak Windows'ta çalışır.",
  "vr.label": "Telegram'da sesli cevap", "vr.off": "Kapalı", "vr.spoken": "Sesli mesaj gönderdiğimde", "vr.always": "Her zaman",
  "vr.hint": "Cevap ayrıca sesli mesaj olarak gelir; yukarıdaki ses uzmanı okur (MP3 sesler ses balonu olarak görünür; Piper gibi WAV sesler, ffmpeg kurulu değilse ses dosyası olarak gelir).",
@@ -843,15 +843,23 @@ function piperBox(saved, piperVoice) {
       .replace("{done}", mb(piper.done || 0)).replace("{total}", piper.total ? mb(piper.total) : "?")}));
   }
   if (!piper.supported) return fill(box, h("p", {class: "hint", text: t("piper.windows")}));
-  const wanted = () => piperVoice.value === "auto" ? (lang === "tr" ? "tr_TR-dfki-medium" : "en_US-amy-medium") : piperVoice.value;
-  const install = h("button", {class: "btn", type: "button", text: t("piper.install"), onclick: () => act(install, async () => {
-    await api("piper/install", {voice: wanted()});
-    await refresh();
-  })});
-  return fill(box,
+  // automatic: the voices of the panel's language and of English; otherwise the chosen voice
+  const wanted = () => (piperVoice.value === "auto" ? [lang === "tr" ? "tr_TR-dfki-medium" : "en_US-amy-medium", "en_US-amy-medium"]
+    : [piperVoice.value]).filter((v, i, all) => all.indexOf(v) === i && !piper.voices.includes(v));
+  const installer = voice => {
+    const button = h("button", {class: "btn", type: "button", text: t("piper.install").replace("{voice}", voice),
+      onclick: () => act(button, async () => {
+        await api("piper/install", {voice});
+        await refresh();
+      })});
+    return button;
+  };
+  const draw = () => fill(box,
     piper.error ? h("p", {class: "note bad", text: piper.error}) : null,
     piper.installed ? h("p", {class: "ok", text: t("piper.ready") + " " + piper.voices.join(", ")}) : null,
-    !piper.installed || !piper.voices.includes(wanted()) ? install : null);
+    wanted().map(installer));
+  piperVoice.addEventListener("change", draw);      // a newly chosen voice can be installed before saving
+  return draw();
 }
 
 function renderSpecialists() {
