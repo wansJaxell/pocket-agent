@@ -302,11 +302,12 @@ en: {
  "sp.paid": "paid: asks every time", "sp.key": "Pollinations key (optional, free)", "sp.getkey": "Get a free key ↗",
  "sp.nokey": "Without a key, images come from Pollinations' classic model (slower) and speech is not available. A free key unlocks both and more models.",
  "sp.writer_hint": "The writer is one of your brains, e.g. a coding model for long code or documents.",
+ "sp.auto": "Automatic", "sp.voice_auto": "Automatic: the answer's language",
  "sp.hearing": "👂 Hearing (voice messages)", "sp.vision": "👁 Seeing (photos, screenshots)",
  "sp.hearing_hint": "Voice messages on Telegram are written down, then handled like text. Groq's key is free (step 1).",
  "sp.vision_hint": "Choose a model that can see pictures, e.g. nvidia/nemotron-3.5-super-vl:free or google/gemma-4-31b-it:free on OpenRouter, or gemini-2.5-flash.",
  "svc.groq": "Groq Whisper (free key)", "svc.piper": "Piper: natural voice on this computer (Turkish too, offline)",
- "piper.install": "Install Piper with this voice (about 85 MB)", "piper.installing": "Downloading {file}: {done} / {total} MB",
+ "piper.install": "Install this voice (about 60 MB; Piper itself 22 MB once)", "piper.installing": "Downloading {file}: {done} / {total} MB",
  "piper.ready": "Piper is installed:", "piper.windows": "Installing Piper from the panel works on Windows.",
  "vr.label": "Voice replies on Telegram", "vr.off": "Off", "vr.spoken": "When I send a voice message", "vr.always": "Always",
  "vr.hint": "The answer also arrives as a voice message, read by the speech specialist above (MP3 voices show as a voice bubble; WAV voices like Piper's as an audio file unless ffmpeg is installed).",
@@ -394,11 +395,12 @@ tr: {
  "sp.getkey": "Ücretsiz anahtar al ↗",
  "sp.nokey": "Anahtarsız görseller Pollinations'ın klasik modelinden gelir (daha yavaş), ses ise kullanılamaz. Ücretsiz anahtar ikisini ve daha fazla modeli açar.",
  "sp.writer_hint": "Yazar, beyinlerinden biridir; ör. uzun kod ya da belgeler için bir kod modeli.",
+ "sp.auto": "Otomatik", "sp.voice_auto": "Otomatik: cevabın dili",
  "sp.hearing": "👂 Duyma (sesli mesajlar)", "sp.vision": "👁 Görme (fotoğraf, ekran)",
  "sp.hearing_hint": "Telegram'daki sesli mesajlar yazıya çevrilir, sonra yazı gibi işlenir. Groq'un anahtarı ücretsizdir (1. adım).",
  "sp.vision_hint": "Görsel okuyabilen bir model seç, ör. OpenRouter'da nvidia/nemotron-3.5-super-vl:free ya da google/gemma-4-31b-it:free, veya gemini-2.5-flash.",
  "svc.groq": "Groq Whisper (ücretsiz anahtar)", "svc.piper": "Piper: bu bilgisayarda doğal ses (Türkçe de, çevrimdışı)",
- "piper.install": "Piper'ı bu sesle kur (yaklaşık 85 MB)", "piper.installing": "{file} indiriliyor: {done} / {total} MB",
+ "piper.install": "Bu sesi kur (yaklaşık 60 MB; Piper bir kereliğine 22 MB)", "piper.installing": "{file} indiriliyor: {done} / {total} MB",
  "piper.ready": "Piper kurulu:", "piper.windows": "Piper'ı panelden kurmak Windows'ta çalışır.",
  "vr.label": "Telegram'da sesli cevap", "vr.off": "Kapalı", "vr.spoken": "Sesli mesaj gönderdiğimde", "vr.always": "Her zaman",
  "vr.hint": "Cevap ayrıca sesli mesaj olarak gelir; yukarıdaki ses uzmanı okur (MP3 sesler ses balonu olarak görünür; Piper gibi WAV sesler, ffmpeg kurulu değilse ses dosyası olarak gelir).",
@@ -753,7 +755,9 @@ const specialistModels = {};      // "image|pollinations" -> the service's model
 
 function specialistRow(kind, saved) {
   const current = saved[kind] || {};
-  const service = h("select", {"aria-label": t("sp." + kind)}, h("option", {value: ""}, t("sp.off")));
+  const automatic = (saved.auto || {})[kind];
+  const service = h("select", {"aria-label": t("sp." + kind)},
+    h("option", {value: ""}, automatic ? t("sp.auto") + ": " + automatic : t("sp.off")));
   if (kind === "writer") {
     S.brains.forEach(b => service.append(h("option", {value: b.provider + "|" + b.model,
       selected: current.provider === b.provider && current.model === b.model}, b.label)));
@@ -768,8 +772,10 @@ function specialistRow(kind, saved) {
   const model = h("select", {"aria-label": t("sp.model")});
   const typed = h("input", {class: "grow", placeholder: t("sp.model"), value: current.model || "", "aria-label": t("sp.model")});
   const voice = h("input", {placeholder: t("sp.voice"), value: current.voice || "", "aria-label": t("sp.voice")});
-  const piperVoice = h("select", {"aria-label": t("sp.voice")}, saved.piper_voices.map(v => h("option",
-    {value: v, selected: v === (current.voice || "tr_TR-dfki-medium")}, v + (saved.piper.voices.includes(v) ? " ✓" : ""))));
+  const piperVoice = h("select", {"aria-label": t("sp.voice")},
+    h("option", {value: "auto", selected: !current.voice || current.voice === "auto"}, t("sp.voice_auto")),
+    saved.piper_voices.map(v => h("option", {value: v, selected: v === current.voice},
+      v + (saved.piper.voices.includes(v) ? " ✓" : ""))));
   const result = h("div", {class: "try-result"});
   const isPiper = () => kind === "speech" && service.value === "piper";
   const listed = id => id && !["writer", "hearing", "vision"].includes(kind) && !["custom", "local", "piper"].includes(id);
@@ -834,14 +840,15 @@ function piperBox(saved, piperVoice) {
       .replace("{done}", mb(piper.done || 0)).replace("{total}", piper.total ? mb(piper.total) : "?")}));
   }
   if (!piper.supported) return fill(box, h("p", {class: "hint", text: t("piper.windows")}));
+  const wanted = () => piperVoice.value === "auto" ? (lang === "tr" ? "tr_TR-dfki-medium" : "en_US-amy-medium") : piperVoice.value;
   const install = h("button", {class: "btn", type: "button", text: t("piper.install"), onclick: () => act(install, async () => {
-    await api("piper/install", {voice: piperVoice.value});
+    await api("piper/install", {voice: wanted()});
     await refresh();
   })});
   return fill(box,
     piper.error ? h("p", {class: "note bad", text: piper.error}) : null,
     piper.installed ? h("p", {class: "ok", text: t("piper.ready") + " " + piper.voices.join(", ")}) : null,
-    !piper.installed || !piper.voices.includes(piperVoice.value) ? install : null);
+    !piper.installed || !piper.voices.includes(wanted()) ? install : null);
 }
 
 function renderSpecialists() {

@@ -12,7 +12,10 @@ result out, and the result is a file in the workspace that the panel shows and T
     vision  a model that can see pictures (photos sent on Telegram, screenshots)
     writer  any of your brains, e.g. a coding model for long code or documents
 
-Prompts sent to these services leave the computer, so every specialist is off until the user picks one.
+Prompts sent to these services leave the computer. Images and the writer are off until the user picks
+a service. Hearing, seeing and speech work by themselves when possible, with what is already there:
+Groq Whisper when a Groq key is saved, the first brain that can see pictures, Piper or the computer's
+own voices. A choice made in the panel always wins.
 """
 
 import base64
@@ -58,12 +61,80 @@ HEARING = {
     "groq": Service("Groq Whisper (free key)", key="groq", key_url="https://console.groq.com/keys"),
     "custom": Service("Your OpenAI-compatible server", key="custom"),
 }
-# Piper: one program and one model file per voice, from Piper's own releases (about 85 MB in all)
+# Piper: one program (about 22 MB) and one model file per voice (about 60 MB), from Piper's own releases
 PIPER_ZIP = "https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_windows_amd64.zip"
-PIPER_VOICES = {"tr_TR-dfki-medium": "tr/tr_TR/dfki/medium/tr_TR-dfki-medium",
-                "en_US-lessac-medium": "en/en_US/lessac/medium/en_US-lessac-medium"}
+PIPER_VOICES = ["en_US-amy-medium", "en_US-lessac-medium", "en_GB-alan-medium", "tr_TR-dfki-medium",
+                "de_DE-thorsten-medium", "fr_FR-siwis-medium", "es_ES-davefx-medium", "es_MX-ald-medium",
+                "it_IT-paola-medium", "pt_BR-faber-medium", "ru_RU-irina-medium", "uk_UA-ukrainian_tts-medium",
+                "pl_PL-gosia-medium", "nl_NL-mls-medium", "ar_JO-kareem-medium", "zh_CN-huayan-medium",
+                "hi_IN-priyamvada-medium", "fa_IR-amir-medium", "sv_SE-nst-medium", "cs_CZ-jirka-medium",
+                "el_GR-rapunzelina-medium", "ro_RO-mihai-medium", "hu_HU-anna-medium", "vi_VN-vais1000-medium",
+                "id_ID-news_tts-medium"]
 VOICE_URL = "https://huggingface.co/rhasspy/piper-voices/resolve/main/{path}"
-DEFAULT_PIPER_VOICE = "tr_TR-dfki-medium"
+DEFAULT_PIPER_VOICE = "en_US-amy-medium"
+CULTURES = {"tr": "tr-TR", "en": "en-US", "de": "de-DE", "fr": "fr-FR", "es": "es-ES", "it": "it-IT", "pt": "pt-BR",
+            "ru": "ru-RU", "uk": "uk-UA", "pl": "pl-PL", "nl": "nl-NL", "ar": "ar-SA", "zh": "zh-CN", "hi": "hi-IN",
+            "fa": "fa-IR", "sv": "sv-SE", "cs": "cs-CZ", "el": "el-GR", "ro": "ro-RO", "hu": "hu-HU", "vi": "vi-VN",
+            "id": "id-ID"}
+
+
+def voice_path(voice: str) -> str:
+    """Where a Piper voice lives in its repository, e.g. tr/tr_TR/dfki/medium/tr_TR-dfki-medium."""
+    locale, quality = voice.split("-")[0], voice.rsplit("-", 1)[1]
+    name = voice[len(locale) + 1:-(len(quality) + 1)]
+    return f"{locale.split('_')[0]}/{locale}/{name}/{quality}/{voice}"
+
+
+_STOPWORDS = {
+    "tr": "ve bir bu için ile da de değil çok ama gibi olarak olan var yok ne mi sen ben biz",
+    "en": "the and is are to of in that it for with you this not be on have will",
+    "de": "und der die das ist nicht ein eine zu mit ich sie es den von auf für wird",
+    "fr": "le la les et est des une un du en que pas pour il fait vous ne au",
+    "es": "el la los las y es en que de por un una para con no se del será hará",
+    "it": "il la e di che è un una per non sono con del della gli",
+    "pt": "o a os as e é de que em um uma para com não do da",
+    "nl": "de het een en is van in dat niet op te zijn met voor",
+    "pl": "i w nie się na jest że to z do jak co",
+    "sv": "och är att det en som på inte med för av",
+    "cs": "a je se na že to v s z do jsem ne",
+    "ro": "și este de la în nu cu o un care pe",
+    "hu": "és a az hogy nem is egy van meg de",
+    "id": "dan yang di ini itu dengan untuk tidak ada akan",
+    "vi": "và là của có không một những được cho",
+}
+_STOPSETS = {language: set(words.split()) for language, words in _STOPWORDS.items()}
+_MARKS = {"tr": "ğışİı", "de": "ß", "es": "ñ¿¡", "pt": "ãõ", "pl": "łąęśźżń", "ro": "ășț", "hu": "őű", "cs": "řěů",
+          "sv": "å", "vi": "ạảấầẩẫậắằẳẵặẹẻẽếềểễệỉịọỏốồổỗộớờởỡợụủứừửữựỳỵỷỹđ"}
+
+
+def guess_language(text: str) -> str:
+    """The language of a text, as a two-letter code (good enough to pick a voice)."""
+    if re.search(r"[\u0600-\u06FF]", text):
+        return "fa" if re.search(r"[پچژگ]", text) else "ar"
+    if re.search(r"[\u0400-\u04FF]", text):
+        return "uk" if re.search(r"[іїєґІЇЄҐ]", text) else "ru"
+    if re.search(r"[\u4e00-\u9fff]", text):
+        return "zh"
+    if re.search(r"[\u0900-\u097F]", text):
+        return "hi"
+    if re.search(r"[\u0370-\u03FF]", text):
+        return "el"
+    words = re.findall(r"[^\W\d_]+", text.lower())
+    scores = {language: sum(word in stops for word in words) for language, stops in _STOPSETS.items()}
+    for language, marks in _MARKS.items():
+        if any(mark in text for mark in marks):
+            scores[language] += 3
+    best = max(scores, key=scores.get)
+    return best if scores[best] > 0 else "en"
+
+
+_SEES = re.compile(r"gemini|gemma-?[34]|vision|[-_.]vl\b|[-_]vl[-_:]|llama-4|llava|pixtral|gpt-4o|gpt-4\.1|gpt-5|"
+                   r"qwen.*vl|omni|kimi-k2\.5|glm-4\.\dv|claude|grok-4", re.IGNORECASE)
+
+
+def sees_images(brain: BrainConfig) -> bool:
+    """Whether a brain takes pictures: the provider's list said so, or the model is known to."""
+    return brain.sees_images or brain.provider == "gemini" or bool(_SEES.search(brain.model))
 VOICE_NOTES = {".mp3", ".ogg", ".oga", ".m4a"}      # what Telegram shows as a voice bubble
 CLASSIC_IMAGE = "https://image.pollinations.ai/prompt/"      # works without a key (rate-limited)
 GATEWAY = "https://gen.pollinations.ai"                      # needs a free key for images
@@ -75,8 +146,10 @@ MAX_GET_TEXT = 900           # longer speech needs the POST endpoint (with a key
 # Windows' own speech engine; the text and paths come in through environment variables
 SAPI = ("Add-Type -AssemblyName System.Speech; "
         "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
-        "if ($env:PA_VOICE) { $s.SelectVoice($env:PA_VOICE) }; "
-        "$s.SetOutputToWaveFile($env:PA_OUT); $s.Speak($env:PA_TEXT); $s.Dispose()")
+        "if ($env:PA_VOICE) { $s.SelectVoice($env:PA_VOICE) } elseif ($env:PA_CULTURE) { try { "
+        "$s.SelectVoiceByHints([System.Speech.Synthesis.VoiceGender]::NotSet, "
+        "[System.Speech.Synthesis.VoiceAge]::NotSet, 0, [Globalization.CultureInfo]::new($env:PA_CULTURE)) "
+        "} catch {} }; $s.SetOutputToWaveFile($env:PA_OUT); $s.Speak($env:PA_TEXT); $s.Dispose()")
 
 
 MEDIA_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp",
@@ -156,18 +229,44 @@ class Studio:
 
     # ---------- what is set up ----------
     def settings(self, kind: str) -> dict:
-        return self.config.media.get(kind) or {}
+        return self.choice(kind)
+
+    def choice(self, kind: str) -> dict:
+        """The specialist used for a kind: the user's choice, or an automatic one from what is connected."""
+        chosen = self.config.media.get(kind) or {}
+        return chosen if chosen.get("provider") else self.automatic(kind)
+
+    def automatic(self, kind: str) -> dict:
+        keys, off = self.config.keys, set(self.config.disabled_providers)
+        if kind == "hearing":
+            return {"provider": "groq", "model": "", "auto": True} if keys.get("groq") and "groq" not in off else {}
+        if kind == "vision":
+            for brain in self.config.chain():
+                info = PROVIDERS.get(brain.provider)
+                usable = (info and not info.retired and brain.enabled and brain.provider not in off
+                          and (brain.api_key or not info.needs_key or brain.provider == "custom"))
+                if usable and sees_images(brain):
+                    return {"provider": brain.provider, "model": brain.model, "auto": True}
+            return {}
+        if kind == "speech":
+            if self.piper_status()["installed"]:
+                return {"provider": "piper", "model": "", "voice": "auto", "auto": True}
+            if os.name == "nt" or os.path.exists("/usr/bin/say"):
+                return {"provider": "local", "model": "", "voice": "", "auto": True}
+        return {}
 
     def ready(self, kind: str) -> bool:
-        return bool(self.settings(kind).get("provider"))
+        return bool(self.choice(kind).get("provider"))
 
     def paid(self, kind: str) -> bool:
-        service = {"image": IMAGE, "speech": SPEECH}.get(kind, {}).get(self.settings(kind).get("provider", ""))
+        service = {"image": IMAGE, "speech": SPEECH}.get(kind, {}).get(self.choice(kind).get("provider", ""))
         return bool(service and service.paid)
 
-    def describe(self, kind: str) -> str:
-        s = self.settings(kind)
-        return f"{s.get('provider', '?')}" + (f" · {s['model']}" if s.get("model") else "")
+    def describe(self, kind: str, choice: dict | None = None) -> str:
+        s = self.choice(kind) if choice is None else choice
+        if not s.get("provider"):
+            return ""
+        return s["provider"] + (f" · {s['model']}" if s.get("model") else "")
 
     def _key(self, name: str) -> str:
         return self.config.keys.get(name, "")
@@ -252,6 +351,19 @@ class Studio:
             return reply.content, EXTENSIONS.get(reply.headers.get("Content-Type", "").split(";")[0], ".mp3")
         raise MediaError("no speech specialist is set up")
 
+    def _piper_voice(self, text: str, voice: str) -> str:
+        """The voice to read a text with: the chosen one, or (auto) an installed voice in the text's language."""
+        if voice and voice != "auto":
+            return voice
+        installed = set(self.piper_status()["voices"])
+        ordered = [v for v in PIPER_VOICES if v in installed] + sorted(installed - set(PIPER_VOICES))
+        language = guess_language(text)
+        for candidate in ordered:
+            if candidate.split("_")[0] == language:
+                return candidate
+        preferred = "tr_TR-dfki-medium" if self.config.language == "tr" else DEFAULT_PIPER_VOICE
+        return preferred if preferred in installed or not ordered else ordered[0]
+
     def _local_speech(self, text: str, voice: str) -> tuple[bytes, str]:
         if os.name == "nt":
             extension = ".wav"
@@ -263,7 +375,8 @@ class Studio:
         os.close(handle)
         try:
             if extension == ".wav":
-                env = {**os.environ, "PA_TEXT": text[:20000], "PA_OUT": path, "PA_VOICE": voice}
+                env = {**os.environ, "PA_TEXT": text[:20000], "PA_OUT": path, "PA_VOICE": voice,
+                       "PA_CULTURE": "" if voice else CULTURES.get(guess_language(text), "en-US")}
                 result = self.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", SAPI], env=env,
                                   capture_output=True, text=True, timeout=300,
                                   creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
@@ -283,7 +396,7 @@ class Studio:
     # ---------- Piper ----------
     def _piper(self, text: str, voice: str) -> tuple[bytes, str]:
         program = piper_program()
-        model = piper_dir() / "voices" / f"{voice or DEFAULT_PIPER_VOICE}.onnx"
+        model = piper_dir() / "voices" / f"{self._piper_voice(text, voice)}.onnx"
         if not program.exists() or not model.exists():
             raise MediaError("Piper is not installed yet: install it in the panel (Specialists, Speech)")
         handle, out = tempfile.mkstemp(suffix=".wav")
@@ -345,7 +458,7 @@ class Studio:
         for suffix in (".onnx.json", ".onnx"):
             target = voices / f"{voice}{suffix}"
             if not target.exists():
-                data = self._download(VOICE_URL.format(path=PIPER_VOICES[voice] + suffix), progress)
+                data = self._download(VOICE_URL.format(path=voice_path(voice) + suffix), progress)
                 target.with_suffix(target.suffix + ".part").write_bytes(data)
                 target.with_suffix(target.suffix + ".part").replace(target)
         return self.piper_status()

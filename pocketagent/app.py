@@ -274,6 +274,7 @@ class App:
             raise PanelError("Enter the API address first.")
         brain = BrainConfig(provider, base_url, model, free=bool(free))
         known, warning = self._catalog.get(provider, {}).get(model), ""
+        brain.sees_images = "image" in ((known or {}).get("input") or [])
         try:
             answer, brain.native_tools = probe(self.config.with_key(brain),
                                                lambda c: Brain(c, http=self.http, retries=0),
@@ -411,6 +412,8 @@ class App:
         kinds = ("image", "speech", "writer", "hearing", "vision")
         return {**{kind: dict(self.config.media.get(kind) or {}) for kind in kinds},
                 "services": services, "pollinations_key": mask(key) if key else "",
+                "auto": {kind: self.runtime.studio.describe(kind, self.runtime.studio.automatic(kind))
+                         for kind in ("image", "speech", "hearing", "vision", "writer")},
                 "voice_reply": self.config.voice_reply, "piper": {**self.runtime.studio.piper_status(),
                                                                   **self.piper_progress},
                 "piper_voices": list(media.PIPER_VOICES)}

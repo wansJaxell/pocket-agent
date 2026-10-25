@@ -56,6 +56,7 @@ class BrainConfig:
     free: bool = True           # only free brains are used as automatic fallbacks
     auto: bool = False          # added by the free-model sync (replaced on the next sync)
     enabled: bool = True        # switched off in the panel: kept in the list, never asked
+    sees_images: bool = False   # the provider's model list says it takes pictures
 
 
 @dataclass
