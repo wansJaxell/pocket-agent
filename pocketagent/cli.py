@@ -10,6 +10,9 @@
 
 import argparse
 import getpass
+import os
+import signal
+import subprocess
 import sys
 import threading
 import time
@@ -155,14 +158,56 @@ def unlock_in_terminal(config: cfg.Config, ask=getpass.getpass, tries: int = 3) 
     return False
 
 
-def already_running(port: int) -> bool:
-    """Is a PocketAgent panel already answering on this port?"""
+def running_instance(port: int) -> dict | None:
+    """The PocketAgent already answering on this port ({"app", "version", "pid"}), if any."""
     session = requests.Session()
     session.trust_env = False                      # never ask a proxy about 127.0.0.1
     try:
-        return session.get(f"http://127.0.0.1:{port}/api/ping", timeout=2).json().get("app") == "PocketAgent"
+        info = session.get(f"http://127.0.0.1:{port}/api/ping", timeout=2).json()
     except Exception:
+        return None
+    return info if isinstance(info, dict) and info.get("app") == "PocketAgent" else None
+
+
+def start_plan(info: dict | None) -> str:
+    """"start" (nothing running), "open" (this version runs already) or "replace" (an older one runs)."""
+    if info is None:
+        return "start"
+    return "open" if info.get("version") == __version__ else "replace"
+
+
+def port_owner(port: int, run=subprocess.run) -> int | None:
+    """The process listening on a port (for versions before 0.4, which did not say their process id)."""
+    if os.name == "nt":
+        argv = ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                f"(Get-NetTCPConnection -LocalPort {int(port)} -State Listen).OwningProcess"]
+    else:
+        argv = ["lsof", "-ti", f"tcp:{int(port)}", "-sTCP:LISTEN"]
+    try:
+        output = run(argv, capture_output=True, text=True, timeout=30).stdout or ""
+    except (OSError, subprocess.SubprocessError):
+        return None
+    numbers = [int(word) for word in output.split() if word.isdigit()]
+    return numbers[0] if numbers else None
+
+
+def stop_instance(info: dict, port: int, run=subprocess.run, pause: float = 0.5) -> bool:
+    """Close an older PocketAgent so this version can take its place; True when the port is free."""
+    pid = info.get("pid") or port_owner(port, run)
+    if not pid:
         return False
+    if os.name == "nt":
+        run(["taskkill", "/PID", str(int(pid)), "/T", "/F"], capture_output=True, timeout=30)
+    else:
+        try:
+            os.kill(int(pid), signal.SIGTERM)
+        except OSError:
+            return False
+    for _ in range(40):
+        if running_instance(port) is None:
+            return True
+        time.sleep(pause)
+    return False
 
 
 def serve(config: cfg.Config, open_browser: bool = True, port: int | None = None) -> None:
@@ -173,11 +218,19 @@ def serve(config: cfg.Config, open_browser: bool = True, port: int | None = None
     from pocketagent.panel import PanelServer
 
     port = port or config.panel_port
-    if already_running(port):
-        print(f"PocketAgent is already running: http://127.0.0.1:{port}/")
+    running = running_instance(port)
+    plan = start_plan(running)
+    if plan == "open":
+        print(f"PocketAgent {__version__} is already running: http://127.0.0.1:{port}/")
         if open_browser:
             webbrowser.open(f"http://127.0.0.1:{port}/")
         return
+    if plan == "replace":
+        print(f"An older PocketAgent ({running.get('version') or 'before 0.4'}) is running: "
+              f"closing it and starting {__version__}.")
+        if not stop_instance(running, port):
+            print("Could not close it: close the old PocketAgent window yourself, then start again.")
+            return
     app = App(config)
     try:
         server = PanelServer(app, port=port)

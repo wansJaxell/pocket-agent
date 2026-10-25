@@ -1,6 +1,7 @@
 """Locked access mode: API keys and the Telegram token are stored encrypted with the panel password."""
 
 import json
+from pathlib import Path
 
 import pytest
 import requests
@@ -138,7 +139,8 @@ def test_autostart_puts_a_visible_shortcut_in_the_startup_folder(monkeypatch, tm
     command, env = ran[0]
     assert command[0] == "powershell" and "WScript.Shell" in command[-1]
     assert env["PA_LINK"] == str(link) and "--autostart" in env["PA_ARGS"]
-    assert "WindowStyle = 7" in command[-1]                     # minimized, but a normal visible window
+    assert env["PA_STYLE"] == "7"                               # minimized, but a normal visible window
+    assert env["PA_DIR"] == str(autostart.PROJECT)              # from source: start where the package is
     assert autostart.is_enabled()
     autostart.disable()
     assert not link.exists() and not autostart.is_enabled()
@@ -150,3 +152,20 @@ def test_autostart_is_windows_only(monkeypatch):
         autostart.enable()
     app = App(cfg.Config())
     assert app.state()["autostart"] == {"supported": False, "enabled": False}
+
+
+def test_a_desktop_icon_starts_this_copy_of_the_program(monkeypatch, tmp_path):
+    monkeypatch.setattr(autostart, "supported", lambda: True)
+    made = []
+
+    def fake_powershell(command, env, **kwargs):
+        if "GetFolderPath" in command[-1]:
+            return type("Done", (), {"returncode": 0, "stdout": str(tmp_path / "Masaüstü") + "\n", "stderr": ""})()
+        made.append(env)
+        Path(env["PA_LINK"]).write_bytes(b"lnk")
+        return type("Done", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    link = autostart.desktop_shortcut(run=fake_powershell)
+    assert link == tmp_path / "Masaüstü" / "PocketAgent.lnk" and link.exists()
+    assert made[0]["PA_STYLE"] == "1" and "--autostart" not in made[0]["PA_ARGS"]
+    assert made[0]["PA_DIR"] == str(autostart.PROJECT)

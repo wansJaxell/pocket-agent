@@ -77,7 +77,8 @@ def test_problems_come_back_as_readable_json(panel, client):
 
 
 def test_ping_answers_without_a_token_so_a_second_start_finds_the_first(panel, client):
-    assert client.get(panel.url + "api/ping", timeout=5).json() == {"app": "PocketAgent"}
+    ping = client.get(panel.url + "api/ping", timeout=5).json()
+    assert ping["app"] == "PocketAgent" and ping["version"] and ping["pid"] > 0     # so a newer start can replace it
 
 
 def test_openrouter_callback_without_a_login_in_progress_is_refused(panel, client):

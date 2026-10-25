@@ -78,3 +78,32 @@ def test_terminal_chat_asks_for_approval_in_the_terminal(make_runtime, monkeypat
     runtime.agent.run("terminal", "status again?")          # the rule saved with "r" covers it
     assert len(runs) == 2
     assert "git status" in capsys.readouterr().out
+
+
+# ---------- starting when another PocketAgent is already running ----------
+def test_a_running_copy_of_the_same_version_is_reused_and_an_older_one_replaced():
+    from pocketagent import __version__
+    from pocketagent.cli import start_plan
+    assert start_plan(None) == "start"
+    assert start_plan({"app": "PocketAgent", "version": __version__, "pid": 1}) == "open"
+    assert start_plan({"app": "PocketAgent", "version": "0.2.0", "pid": 1}) == "replace"
+    assert start_plan({"app": "PocketAgent"}) == "replace"          # versions before 0.4 did not say
+
+
+def test_the_older_copy_is_stopped_by_its_process_id(monkeypatch):
+    from pocketagent import cli
+    ran, answers = [], iter([{"app": "PocketAgent"}, None])
+    monkeypatch.setattr(cli.os, "name", "nt")
+    monkeypatch.setattr(cli, "running_instance", lambda port: next(answers))
+    assert cli.stop_instance({"app": "PocketAgent", "pid": 4242}, 8765, run=lambda argv, **kw: ran.append(argv),
+                             pause=0)
+    assert ran == [["taskkill", "/PID", "4242", "/T", "/F"]]
+
+
+def test_an_old_copy_that_does_not_say_its_process_id_is_found_by_its_port(monkeypatch):
+    from types import SimpleNamespace
+    from pocketagent import cli
+    monkeypatch.setattr(cli.os, "name", "nt")
+    found = cli.port_owner(8765, run=lambda argv, **kw: SimpleNamespace(returncode=0, stdout="15676\r\n"))
+    assert found == 15676
+    assert cli.port_owner(8765, run=lambda argv, **kw: SimpleNamespace(returncode=0, stdout="")) is None

@@ -194,6 +194,7 @@ textarea.wide{width:100%;min-height:70px;resize:vertical}
       <h2><span class="num">+</span><span data-t="step.more"></span></h2>
       <label class="row"><input type="checkbox" id="autostart"><span data-t="auto.label"></span></label>
       <p class="hint" id="autostart-hint"></p>
+      <div class="row"><button class="btn" id="desktop-shortcut" type="button" data-t="desktop.make"></button></div>
       <p class="hint" id="memory"></p>
     </article>
   </section>
@@ -278,6 +279,7 @@ en: {
  "step.more": "More", "auto.label": "Start PocketAgent when Windows starts",
  "auto.hint": "Adds a shortcut to your Startup folder. The agent window stays visible on the taskbar.",
  "auto.unsupported": "Only available on Windows.",
+ "desktop.make": "Put a PocketAgent icon on the desktop", "desktop.done": "Desktop icon created:",
  "memory.line": "Memory (stays the same whichever brain answers): {notes} notes, {decisions} decisions.",
  "pick.search": "Search models…", "pick.free": "only free", "pick.tools": "only with tool calling",
  "pick.any": "any context", "pick.more": "{n} more: narrow the search.", "pick.none": "No model matches.",
@@ -357,6 +359,7 @@ tr: {
  "step.more": "Diğer", "auto.label": "Windows açılışında PocketAgent'ı başlat",
  "auto.hint": "Başlangıç klasörüne bir kısayol ekler. Ajan penceresi görev çubuğunda görünür kalır.",
  "auto.unsupported": "Sadece Windows'ta kullanılabilir.",
+ "desktop.make": "Masaüstüne PocketAgent simgesi koy", "desktop.done": "Masaüstü simgesi oluşturuldu:",
  "memory.line": "Hafıza (hangi beyin cevap verirse versin aynı kalır): {notes} not, {decisions} karar.",
  "pick.search": "Model ara…", "pick.free": "sadece ücretsiz", "pick.tools": "sadece araç kullanabilenler",
  "pick.any": "her bağlam", "pick.more": "{n} model daha: aramayı daralt.", "pick.none": "Eşleşen model yok.",
@@ -998,6 +1001,10 @@ $("save-access").addEventListener("click", () => act($("save-access"), async () 
   $("pw1").value = $("pw2").value = "";
   toast(t("saved"));
   await refresh();
+}));
+$("desktop-shortcut").addEventListener("click", () => act($("desktop-shortcut"), async () => {
+  const made = await api("desktop-shortcut", {});
+  toast(t("desktop.done") + " " + made.path);
 }));
 $("autostart").addEventListener("change", () => act($("autostart"), async () => {
   S.autostart = await api("autostart", {enabled: $("autostart").checked});

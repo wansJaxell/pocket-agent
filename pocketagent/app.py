@@ -624,6 +624,12 @@ class App:
             raise PanelError(str(error)) from None
         return {"supported": autostart.supported(), "enabled": autostart.is_enabled()}
 
+    def desktop_shortcut(self) -> dict:
+        try:
+            return {"path": str(autostart.desktop_shortcut())}
+        except autostart.AutostartError as error:
+            raise PanelError(str(error)) from None
+
     # ---------- chat ----------
 
     def set_language(self, language: str) -> None:

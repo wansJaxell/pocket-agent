@@ -22,6 +22,7 @@ from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
+from pocketagent import __version__
 from pocketagent.app import App, PanelError
 from pocketagent.media import MEDIA_TYPES
 from pocketagent.panel_page import render_page
@@ -82,6 +83,7 @@ ROUTES = {
     ("POST", "lock"): lambda r: (r.app.logout(r.session), {"_session": None})[1],
     ("POST", "vault/forget"): lambda r: r.app.forget_vault(),
     ("POST", "autostart"): lambda r: r.app.set_autostart(r.body.get("enabled") is True),
+    ("POST", "desktop-shortcut"): lambda r: r.app.desktop_shortcut(),
     ("POST", "stop"): lambda r: r.app.emergency_stop("panel"),
     ("POST", "computer_use"): lambda r: r.app.set_computer_use(r.body.get("enabled") is True),
     ("POST", "approvals/answer"): lambda r: r.app.answer_approval(r.text("id"), r.body.get("approve") is True,
@@ -163,7 +165,7 @@ class PanelServer:
                 if method == "GET" and url.path in ("/", "/index.html"):
                     return self._page()
                 if method == "GET" and url.path == "/api/ping":
-                    return self._json(200, {"app": "PocketAgent"})
+                    return self._json(200, {"app": "PocketAgent", "version": __version__, "pid": os.getpid()})
                 if method == "GET" and url.path == "/oauth/openrouter":
                     return self._openrouter_callback(query)
                 if not url.path.startswith("/api/"):
