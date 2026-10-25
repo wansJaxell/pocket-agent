@@ -57,6 +57,7 @@ class ToolContext:
     generation: int | None = None                        # for the stop button (see ApprovalEngine)
     tainted_by: list = field(default_factory=list)      # untrusted content read during this turn
     studio: Any = None        # media.Studio: the specialists (image, speech, writer)
+    tasks: Any = None         # schedule.TaskStore
     files: list = field(default_factory=list)           # workspace files made for the answer
 
     def approve(self, action) -> str:

@@ -25,6 +25,7 @@ from pocketagent import media
 from pocketagent.media import MediaError, Studio
 from pocketagent.memory import ConversationStore, DecisionLog, IdentityStore, NoteStore, ReminderStore
 from pocketagent.oauth import authorize_url, exchange_code, make_verifier
+from pocketagent.schedule import TaskStore
 from pocketagent.setup_wizard import TELEGRAM_API, detect_local_models, wait_for_owner
 from pocketagent.tools import ToolRegistry
 
@@ -54,10 +55,11 @@ class Runtime:
         self.approvals = ApprovalEngine(self.rules, self.audit, enabled=lambda: config.computer_use,
                                         timeout=config.approval_timeout)
         self.studio = Studio(config, http=http or requests)
+        self.tasks = TaskStore(memory)
         self.agent = Agent(config, brain or Router(config, http=http), self.registry, self.conversations,
                            self.notes, self.reminders, cfg.workspace_dir(),
                            identity=self.identity, decisions=self.decisions,
-                           approvals=self.approvals, audit=self.audit, studio=self.studio)
+                           approvals=self.approvals, audit=self.audit, studio=self.studio, tasks=self.tasks)
 
 
 def start_reminder_loop(runtime: Runtime, notify, stop: threading.Event) -> None:
@@ -135,6 +137,7 @@ class App:
             "computer_use": c.computer_use,
             "approvals": self.runtime.approvals.waiting(),
             "rules": self.runtime.rules.all(),
+            "tasks": self.runtime.tasks.all(),
             "audit": self.runtime.audit.recent(40),
             "jobs": self.jobs.recent(10),
             "notices": list(self.notices),
@@ -540,6 +543,7 @@ class App:
             t, r = self.config.telegram, self.runtime
             self._bot_stop = threading.Event()
             self.bot = TelegramBot(t.token, t.owner_chat_id, r.agent, r.registry, r.conversations, jobs=self.jobs,
+                                   tasks=r.tasks,
                                    approvals=r.approvals, on_stop=self.emergency_stop,
                                    language=lambda: self.config.language)
             threading.Thread(target=self.bot.run_forever, args=(self._bot_stop,), daemon=True).start()
@@ -673,6 +677,48 @@ class App:
         if not self.runtime.approvals.answer(str(pending_id), approve, remember, by="panel"):
             raise PanelError("This request is no longer waiting for an answer.")
 
+    # ---------- scheduled tasks ----------
+    def run_due_tasks(self, now: datetime | None = None) -> list:
+        """Start every task whose time has come (each is moved to its next time first: never twice)."""
+        now = now or datetime.now()
+        jobs = []
+        for task in self.runtime.tasks.due(now):
+            self.runtime.tasks.advance(task["id"], now)
+            jobs.append(self.jobs.submit(f"task #{task['id']}: {task['task'][:40]}",
+                                         lambda task=task: self._run_task(task), source="schedule"))
+        return jobs
+
+    def _run_task(self, task: dict) -> dict:
+        prompt = f"[Scheduled task #{task['id']}] {task['task']}\nDo it now and report the result briefly."
+        answer = self.runtime.agent.run(task["chat_id"], prompt, source="schedule")
+        text, chat = f"⏰ #{task['id']}: {answer.text}", str(task["chat_id"])
+        if self.bot and chat not in ("panel", "terminal"):
+            self.bot.send(chat, text)
+            for path in answer.files:
+                self.bot.send_file(chat, path)
+        else:
+            self.notice(text)
+        self.runtime.audit.write("task_ran", task=task["id"], result=answer.text)
+        return {"text": answer.text, "files": answer.files}
+
+    def delete_task(self, task_id) -> None:
+        try:
+            removed = self.runtime.tasks.remove(int(task_id))
+        except (TypeError, ValueError):
+            removed = False
+        if not removed:
+            raise PanelError("There is no such task.")
+        self.runtime.audit.write("task_deleted", task=int(task_id), by="panel")
+
+    def _task_loop(self) -> None:
+        while not self._stop.wait(20):
+            if self.locked:
+                continue
+            try:
+                self.run_due_tasks()
+            except Exception as error:          # a broken task file must not stop the loop
+                self.notice(f"Scheduled tasks: {type(error).__name__}: {error}")
+
     def delete_rule(self, rule_id) -> None:
         try:
             removed = self.runtime.rules.remove(int(rule_id))
@@ -712,6 +758,7 @@ class App:
                 self.notice(text)
         start_reminder_loop(self.runtime, notify, self._stop)
         threading.Thread(target=self._free_sync_loop, daemon=True).start()
+        threading.Thread(target=self._task_loop, daemon=True).start()
 
     def stop_services(self) -> None:
         self._stop.set()

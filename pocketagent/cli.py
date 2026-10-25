@@ -17,6 +17,7 @@ import sys
 import threading
 import time
 import webbrowser
+from datetime import datetime
 
 import requests
 
@@ -107,7 +108,7 @@ def run(config: cfg.Config, mode: str) -> None:
 
     runtime = Runtime(config)
     stop = threading.Event()
-    bot = None
+    bot, jobs = None, JobQueue()
     runtime.approvals.notifiers.append(console_approver(runtime.approvals))
 
     def emergency_stop(by):
@@ -117,7 +118,7 @@ def run(config: cfg.Config, mode: str) -> None:
         return summary
     if mode in ("all", "telegram") and config.telegram_ready:
         bot = TelegramBot(config.telegram.token, config.telegram.owner_chat_id, runtime.agent,
-                          runtime.registry, runtime.conversations, jobs=JobQueue(),
+                          runtime.registry, runtime.conversations, jobs=jobs, tasks=runtime.tasks,
                           approvals=runtime.approvals, on_stop=emergency_stop, language=lambda: config.language)
         runtime.approvals.notifiers.append(bot.ask_approval)
         runtime.approvals.resolved.append(bot.approval_resolved)
@@ -133,6 +134,18 @@ def run(config: cfg.Config, mode: str) -> None:
         else:
             print(f"\n{text}\nYou: ", end="", flush=True)
     start_reminder_loop(runtime, notify, stop)
+
+    def run_task(task):
+        answer = runtime.agent.run(task["chat_id"], f"[Scheduled task #{task['id']}] {task['task']}\n"
+                                   "Do it now and report the result briefly.", source="schedule")
+        notify(task["chat_id"], f"⏰ #{task['id']}: {answer.text}")
+
+    def task_loop():
+        while not stop.wait(20):
+            for task in runtime.tasks.due(datetime.now()):
+                runtime.tasks.advance(task["id"], datetime.now())
+                jobs.submit(f"task #{task['id']}", lambda task=task: run_task(task), source="schedule")
+    threading.Thread(target=task_loop, daemon=True).start()
 
     try:
         if mode == "telegram":

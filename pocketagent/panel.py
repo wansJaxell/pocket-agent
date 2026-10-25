@@ -89,6 +89,7 @@ ROUTES = {
     ("POST", "approvals/answer"): lambda r: r.app.answer_approval(r.text("id"), r.body.get("approve") is True,
                                                                   r.body.get("remember") is True),
     ("POST", "rules/delete"): lambda r: r.app.delete_rule(r.body.get("id")),
+    ("POST", "tasks/delete"): lambda r: r.app.delete_task(r.body.get("id")),
     ("POST", "chat"): lambda r: r.app.chat(r.text("text")),
     ("POST", "chat/reset"): lambda r: r.app.reset_chat(),
 }

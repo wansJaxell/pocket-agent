@@ -24,6 +24,7 @@ TEXT = {
         "help": "Just write to me: questions, tasks, reminders.\n\n"
                 "/dur or /stop  stop everything at once\n"
                 "/rules  saved approval rules\n"
+                "/tasks  scheduled tasks\n"
                 "/reset  forget this conversation\n"
                 "/skills  what I can do\n"
                 "/help  this message",
@@ -35,6 +36,7 @@ TEXT = {
         "stopped": "🛑 Stopped everything: {jobs} waiting job(s) cancelled, {approvals} approval(s) denied, "
                    "{processes} process(es) ended. Computer use is now OFF: turn it on again in the panel.",
         "rules": "Saved approval rules (delete them in the panel):", "no_rules": "No saved approval rules.",
+        "tasks": "Scheduled tasks (cancel one by asking me, or in the panel):", "no_tasks": "No scheduled tasks.",
         "classes": {"money": "spending money", "delete": "deleting files", "message": "sending a message",
                     "secrets": "passwords or keys", "untrusted": "after web/file content"},
     },
@@ -42,6 +44,7 @@ TEXT = {
         "help": "Bana yazman yeterli: sorular, işler, hatırlatmalar.\n\n"
                 "/dur  her şeyi anında durdur\n"
                 "/kurallar  kayıtlı onay kuralları\n"
+                "/gorevler  zamanlanmış görevler\n"
                 "/reset  bu sohbeti unut\n"
                 "/skills  neler yapabilirim\n"
                 "/help  bu mesaj",
@@ -53,6 +56,7 @@ TEXT = {
         "stopped": "🛑 Her şey durduruldu: {jobs} bekleyen iş iptal, {approvals} onay reddedildi, "
                    "{processes} işlem sonlandırıldı. Bilgisayar kullanımı KAPALI: panelden yeniden açabilirsin.",
         "rules": "Kayıtlı onay kuralları (panelden silebilirsin):", "no_rules": "Kayıtlı onay kuralı yok.",
+        "tasks": "Zamanlanmış görevler (iptal için bana söyle ya da panelden sil):", "no_tasks": "Zamanlanmış görev yok.",
         "classes": {"money": "para harcama", "delete": "dosya silme", "message": "mesaj gönderme",
                     "secrets": "şifre/anahtar", "untrusted": "web/dosya içeriğinden sonra"},
     },
@@ -144,12 +148,13 @@ def footer(answer) -> str:
 
 class TelegramBot:
     def __init__(self, token: str, owner_chat_id: int, agent, registry, conversations, http=requests,
-                 jobs=None, approvals=None, on_stop=None, language=None):
+                 jobs=None, approvals=None, on_stop=None, language=None, tasks=None):
         self.token, self.owner = token, int(owner_chat_id)
         self.agent, self.registry, self.conversations, self.http = agent, registry, conversations, http
         self.jobs = jobs            # a JobQueue: answers are worked out there, so polling never waits
         self.approvals = approvals  # the ApprovalEngine: buttons answer its requests
         self.on_stop = on_stop      # called by /dur with "telegram"; returns a summary
+        self.tasks = tasks          # the TaskStore, for /tasks
         self.language = language or (lambda: "en")
         self._refused: set[int] = set()
         self._approval_messages: dict[str, int] = {}
@@ -203,6 +208,11 @@ class TelegramBot:
             self.send(chat_id, "Conversation cleared.")
         elif command == "/skills":
             self.send(chat_id, "\n".join(f"• {t.name}: {t.description}" for t in self.registry.tools.values()))
+        elif command in ("/tasks", "/gorevler", "/görevler"):
+            tasks = self.tasks.all() if self.tasks else []
+            self.send(chat_id, self.t("tasks") + "\n" + "\n".join(
+                f"#{t['id']} {t['next'].replace('T', ' ')[:16]} ({t['repeat'] or 'once'}): {t['task']}" for t in tasks)
+                if tasks else self.t("no_tasks"))
         elif command in ("/rules", "/kurallar"):
             self.send(chat_id, self.rules_text())
         elif self.jobs:

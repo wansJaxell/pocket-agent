@@ -205,6 +205,11 @@ textarea.wide{width:100%;min-height:70px;resize:vertical}
       <p class="hint" data-t="cu.always"></p>
     </article>
     <article class="card">
+      <h2 data-t="tasks.title"></h2>
+      <p class="hint" data-t="tasks.hint"></p>
+      <ul class="list" id="tasks"></ul>
+    </article>
+    <article class="card">
       <h2 data-t="rules.title"></h2>
       <p class="hint" data-t="rules.hint"></p>
       <ul class="list" id="rules"></ul>
@@ -309,6 +314,9 @@ en: {
  "ap.deny": "❌ Deny", "ap.always": "⚠️ Always asks:", "ap.after": "⚠️ Comes after reading untrusted content:",
  "rules.title": "Saved approval rules", "rules.none": "No saved rules.", "rules.delete": "Delete",
  "rules.hint": "A rule allows one exact action again: the same command in the same folder, or the same site. Anything else is asked again.",
+ "tasks.title": "Scheduled tasks", "tasks.none": "No scheduled tasks. Ask the agent, e.g. \"every weekday at 08:00 send me the weather\".",
+ "tasks.hint": "The agent does these at their time and sends the result where they were asked for. Actions on the computer still ask you first.",
+ "tasks.once": "once", "tasks.next": "next:",
  "jobs.title": "Background jobs", "jobs.none": "No jobs yet.", "audit.title": "Audit log (newest first)",
  "audit.none": "Nothing yet.", "chat.stopped": "🛑 Stopped.",
  "class.money": "spending money", "class.delete": "deleting files", "class.message": "sending a message",
@@ -390,6 +398,9 @@ tr: {
  "ap.deny": "❌ Reddet", "ap.always": "⚠️ Her zaman sorulur:", "ap.after": "⚠️ Güvenilmeyen içerik okunduktan sonra geldi:",
  "rules.title": "Kayıtlı onay kuralları", "rules.none": "Kayıtlı kural yok.", "rules.delete": "Sil",
  "rules.hint": "Bir kural tek bir eylemin aynısına yeniden izin verir: aynı klasörde aynı komut ya da aynı site. Farklı olan her şey yeniden sorulur.",
+ "tasks.title": "Zamanlanmış görevler", "tasks.none": "Zamanlanmış görev yok. Ajana söyle, ör. \"hafta içi her sabah 08:00'de bana hava durumunu gönder\".",
+ "tasks.hint": "Ajan bunları zamanı gelince yapar ve sonucu istendikleri yere gönderir. Bilgisayardaki işlemler yine önce sana sorulur.",
+ "tasks.once": "bir kez", "tasks.next": "sıradaki:",
  "jobs.title": "Arka plan işleri", "jobs.none": "Henüz iş yok.", "audit.title": "Denetim günlüğü (en yeni üstte)",
  "audit.none": "Henüz bir şey yok.", "chat.stopped": "🛑 Durduruldu.",
  "class.money": "para harcama", "class.delete": "dosya silme", "class.message": "mesaj gönderme",
@@ -875,6 +886,16 @@ function renderSafety() {
         await api("rules/delete", {id: r.id});
         await refresh();
       })}))) : h("li", {class: "hint", text: t("rules.none")}));
+  }
+  if (changed("tasks", S.tasks)) {
+    fill($("tasks"), S.tasks.length ? S.tasks.map(task => h("li", {},
+      h("span", {class: "what", text: "#" + task.id + " " + task.task}),
+      h("span", {class: "tag", text: task.repeat || t("tasks.once")}),
+      h("span", {class: "when", text: t("tasks.next") + " " + task.next.replace("T", " ").slice(0, 16)}),
+      h("button", {class: "btn small", type: "button", text: t("rules.delete"), onclick: () => act(null, async () => {
+        await api("tasks/delete", {id: task.id});
+        await refresh();
+      })}))) : h("li", {class: "hint", text: t("tasks.none")}));
   }
   if (changed("jobs", S.jobs)) {
     fill($("jobs"), S.jobs.length ? S.jobs.map(j => h("li", {},

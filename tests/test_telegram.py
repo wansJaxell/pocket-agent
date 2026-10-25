@@ -214,3 +214,16 @@ def test_answers_are_sent_as_html_and_plain_text_if_telegram_refuses(make_runtim
     http.refuse_html = True
     bot.send(OWNER, "**broken <b> markup**")
     assert http.sent[-1][1]["text"] == "**broken <b> markup**" and "parse_mode" not in http.sent[-1][1]
+
+
+def test_tasks_command_lists_scheduled_tasks(make_runtime):
+    from datetime import datetime
+    runtime, _ = make_runtime()
+    http = FakeTelegram()
+    bot = TelegramBot("TOKEN", OWNER, runtime.agent, runtime.registry, runtime.conversations, http=http,
+                      tasks=runtime.tasks)
+    bot.handle(message(OWNER, "/gorevler"))
+    assert "No scheduled tasks" in http.messages_to(OWNER)[-1]
+    runtime.tasks.add("Hava durumunu yaz", datetime(2026, 10, 26, 8, 0), "weekdays", chat_id=str(OWNER), source="telegram")
+    bot.handle(message(OWNER, "/tasks"))
+    assert "#1 2026-10-26 08:00 (weekdays): Hava durumunu yaz" in http.messages_to(OWNER)[-1]
