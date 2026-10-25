@@ -13,11 +13,17 @@ or from Telegram on any phone. It can use your computer too, but only what you a
   (several with 1M-token context) can be added and kept up to date automatically
 - **Specialists:** the agent writes a prompt and hands it to an image, speech or writing model; the
   picture, audio or file comes back in the chat and on Telegram
+- **Telegram with your voice:** send voice messages and photos; it can answer with a voice message,
+  in Turkish too, with Piper running offline on your computer
+- **Documents:** reads Word, Excel, PowerPoint and PDF files, writes Word and Excel files
+- **Scheduled tasks:** "every weekday at 08:00, send me the weather"
+- **A real browser:** its own Edge or Chrome window reads pages after their JavaScript ran, clicks and types
 - **Its own memory:** name, personality, notes and a decision log that stay the same whichever brain you use
 - **Your keys, encrypted if you want:** lock the panel with a password and the API keys are stored encrypted
-- **Computer use with approvals:** off by default; when on, every action needs your OK, and one button stops everything
+- **Computer use with approvals:** commands, the browser, screenshots, clipboard, opening programs; off
+  by default, every action needs your OK, and one button stops everything
 - **English or Turkish** interface (English by default)
-- **Tiny:** one dependency (`requests`), a single executable, 198 tests on Windows, macOS and Linux
+- **Small:** two pure-Python packages (`requests`, and `pypdf` for PDF files), a single executable, 275 tests
 
 ![Telegram chat](docs/telegram.png)
 
@@ -28,8 +34,8 @@ flowchart LR
     U["You<br/>(panel, Telegram, terminal)"] --> J[Job queue] --> A[Agent loop]
     A <--> R["Brain chain<br/>1st choice → next free one on 402/403/429"]
     A <--> S["Skills<br/>time · calculator · files · web · notes · decisions · reminders · yours"]
-    A --> G{"Approval engine"} --> O["Computer<br/>shell · browser"]
-    A --> X["Specialists<br/>image · speech · writer"]
+    A --> G{"Approval engine"} --> O["Computer<br/>shell · browser · screen · clipboard · apps"]
+    A --> X["Specialists<br/>image · speech · hearing · vision · writer"]
     A --> M[("Local memory<br/>identity · notes · decisions · history")]
     G --> L[("Audit log")]
 ```
@@ -50,6 +56,9 @@ Models without native tool calling still work: tools are then described in the p
 3. Your browser opens the panel at `http://127.0.0.1:8765`. Follow the four steps (about 2 minutes)
 
 Keep the PocketAgent window open while you use the agent; closing it stops the agent.
+**Settings → Put a PocketAgent icon on the desktop** makes a desktop icon that always starts this copy.
+If an older PocketAgent is still running when you start a newer one, the newer one closes it and
+takes its place (the same version is simply reopened in the browser).
 
 ### Any computer with Python 3.10+
 ```bash
@@ -108,6 +117,18 @@ list answers instead; paid models are never used as fallbacks. A wrong key (401)
 (400) is shown, not hidden. If every brain fails, the error lists what happened to each one.
 Under each answer you see the brain that wrote it, e.g. `🧠 Gemini · gemini-2.5-flash (↪ Groq · llama-3.3-70b-versatile: HTTP 429)`.
 
+**Switching brains off.** Every brain, and every provider as a whole, has an on/off switch: switched-off
+brains stay in the list but are never asked. Brains without a key are skipped too, and a saved key
+can be deleted (e.g. a wrong one). NVIDIA's and GitHub's model lists answer any key, so their keys are
+checked with one tiny request when you save them.
+
+**OpenRouter's free limit.** Free OpenRouter models allow 20 requests a minute and **50 a day for the
+whole account** (1000 a day after a one-time $10 top-up), and the agent may use several requests per
+message. When the daily limit is reached, PocketAgent skips OpenRouter's free models until the reset
+time (the panel shows it) instead of failing on every message. Add brains from other providers (NVIDIA,
+Groq, Gemini, Cerebras) so there is always one that answers. Some free OpenRouter models are kept for
+other apps only ("agentic harnesses"); PocketAgent switches those off and never adds them again.
+
 **OpenRouter's free models, automatically.** In the OpenRouter part of step 1, **Add / update now**
 puts OpenRouter's free models that support tool calling behind your own brains, biggest context
 first (e.g. 1M-token Nemotron 3 Ultra, Inkling), with `openrouter/free` (OpenRouter's own router over
@@ -146,9 +167,19 @@ you pick one, because what you send them leaves your computer.
 | 🔊 Speech (`create_speech`) | Pollinations | free, needs the free Pollinations key |
 | | this computer's voices | free and offline (Windows speech voices, macOS `say`) |
 | | your own OpenAI-compatible server | `/v1/audio/speech` |
+| | Piper | free, natural voices **on this computer, offline**, Turkish (`tr_TR-dfki-medium`) and English; installed from the panel (about 85 MB) |
 | ✍️ Writing / code (`ask_specialist`) | any of your brains | e.g. a coding model for long code; can save the result as a file |
+| 👂 Hearing (Telegram voice messages) | Groq Whisper | free with the Groq key; or your own server (`/v1/audio/transcriptions`) |
+| 👁 Seeing (`look_at_image`) | a model that sees pictures | e.g. `nvidia/nemotron-3.5-super-vl:free` or `google/gemma-4-31b-it:free` on OpenRouter, or Gemini |
 
-Video generation has no free option today, so it is not included.
+**Telegram with voice and photos.** Send a voice message: it is written down (you see what was
+understood) and handled like a typed message. Send a photo or a file: it is saved in the workspace's
+`inbox` folder and the agent looks at it (`look_at_image`) or reads it (`read_document`). **Voice
+replies** can be off, on when you sent a voice message, or always: the answer then also arrives as a
+voice message. MP3 voices (Pollinations) show as a voice bubble; WAV voices (Piper, Windows) arrive as
+an audio file unless [ffmpeg](https://ffmpeg.org) is installed, which turns them into voice bubbles.
+
+Local video generation (e.g. Wan 2.2 through ComfyUI) is planned as a later update.
 
 ## Memory that belongs to the agent
 
@@ -188,6 +219,17 @@ Turn computer use on in the panel's **Safety** tab. Then:
 The agent is a single agent with one background job queue: messages from the panel and Telegram are
 answered one after another, while approvals and STOP are handled at once.
 
+## Scheduled tasks
+
+Ask for it in plain words: *"every weekday at 08:00, send me the weather in Istanbul"*. The agent
+saves the task (`schedule_task`); at the time, it runs in the background like a message from you and
+the answer arrives where you asked (Telegram or the panel). Tasks can run once, hourly, daily, on
+weekdays, weekly, or every N minutes or hours (at most every 5 minutes, to spare free quotas). If the
+computer was off, a missed task runs once at the next start. Actions on the computer inside a task
+still ask for approval, and a task requested after reading a web page or a file needs your approval
+too, so a page cannot plant a standing job. See and cancel them in the **Safety** tab or with `/tasks`
+(`/gorevler`) on Telegram.
+
 ## Built-in skills
 
 | Skill | Tools |
@@ -198,9 +240,28 @@ answered one after another, while approvals and STOP are handled at once.
 | notes | `remember`, `recall`, `forget` |
 | decisions | `record_decision`, `list_decisions` |
 | reminders | `set_reminder`, `list_reminders`, `cancel_reminder` (delivered on Telegram or in the panel) |
-| specialists | `create_image`, `create_speech`, `ask_specialist` (see *Specialists*) |
+| documents | `read_document` (Word, Excel, PowerPoint, PDF, text), `write_word`, `write_excel` |
+| schedule | `schedule_task`, `list_tasks`, `cancel_task` |
+| specialists | `create_image`, `create_speech`, `look_at_image`, `ask_specialist` (see *Specialists*) |
 | shell | `run_command`: PowerShell on Windows, `sh` elsewhere (computer use, approval for every command) |
-| browser | `open_in_browser`: opens a page in your own browser (computer use, approval per site) |
+| browser | `browser_go`, `browser_read`, `browser_click`, `browser_type`, `browser_scroll`, `browser_screenshot` in the agent's own window; `open_in_browser` in yours (computer use) |
+| desktop | `take_screenshot`, `read_clipboard`, `write_clipboard`, `open_app` (computer use) |
+
+**The agent's browser** is Edge (or Chrome) in a visible window with a separate PocketAgent profile:
+none of your own logins or passwords. It reads pages the way you see them, after their JavaScript ran
+and their prices loaded. Going to a site is approved per site; every click and every typed text is
+asked again (they come after reading a page), and buy/delete/send words are flagged. The agent never
+types into password fields: you log in yourself in the open window. It does not solve captchas.
+**STOP** closes it.
+
+**Desktop:** screenshots can be remembered as allowed; reading the clipboard is asked every time and
+never remembered (it may hold a copied password); `open_app` opens programs by name (word, excel,
+hesap makinesi...) or files and folders, with a rule as narrow as program + file, and never command
+shells (those go through `run_command`, where each command is shown).
+
+**Documents** in the workspace (including files sent on Telegram) are read freely; files elsewhere on
+the computer need computer use and your approval for their folder. Word and Excel files the agent
+writes are delivered with the answer.
 
 ### Write your own skill
 A skill is a Python file with documented functions. Type hints and the docstring become the
@@ -244,7 +305,8 @@ A complete example (current weather, free API) is in [`examples/skills/weather.p
 | `pocketagent doctor` | test the brains and Telegram |
 
 In Telegram: `/dur` or `/stop` stops everything, `/kurallar` or `/rules` lists approval rules,
-`/reset` clears the conversation, `/skills` lists what the agent can do.
+`/gorevler` or `/tasks` lists scheduled tasks, `/reset` clears the conversation, `/skills` lists what
+the agent can do. Voice messages, photos and files work too.
 
 **Start with Windows:** tick the option in the panel. It adds a shortcut to your Startup folder that
 opens the normal PocketAgent window minimized (never hidden). In locked mode the browser opens so you
@@ -259,8 +321,8 @@ can type the password.
   clickjacking). Everything from models and web pages is shown as text, never as HTML.
 - **Locked mode** encrypts the API keys and the Telegram token with a key derived from your panel
   password: scrypt (N=2¹⁵, r=8) → AES-256-CTR + HMAC-SHA256 (encrypt-then-MAC). Python's standard
-  library has no AES, and PocketAgent only depends on `requests`, so AES is a small pure-Python
-  implementation checked against the FIPS-197 and NIST SP 800-38A test vectors. The password is
+  library has no AES, so AES is a small pure-Python implementation checked against the FIPS-197 and
+  NIST SP 800-38A test vectors. The password is
   never stored; if you forget it, the vault is deleted and you enter the keys again. In open mode the
   keys are stored as plain text in `config.json` in your user folder.
 - **Telegram is owner-only.** The first person to press START during setup becomes the owner; every
@@ -279,19 +341,22 @@ can type the password.
 
 ```bash
 pip install -e ".[dev]"
-pytest                                   # 198 tests, no network, model, Telegram or OS calls
-pyinstaller --onefile --name PocketAgent --collect-submodules pocketagent.skills pocketagent/__main__.py
+pytest                                   # 275 tests, no network, model, Telegram or OS calls
+pyinstaller --onefile --name PocketAgent --collect-submodules pocketagent.skills --exclude-module numpy --exclude-module PIL --exclude-module cryptography --exclude-module Crypto --exclude-module yaml --exclude-module cffi --exclude-module setuptools pocketagent/__main__.py
 ```
 
+The `--exclude-module` options keep optional packages that pypdf could use (and that may be installed
+on your computer) out of the executable; PDF text reading does not need them.
+
 Tests replace the model servers, Telegram, the browser and the operating system with small fakes,
-so they are fast and repeatable. Pushing a tag such as `v0.3.0` builds Windows, macOS and Linux
+so they are fast and repeatable. Pushing a tag such as `v0.4.0` builds Windows, macOS and Linux
 executables with GitHub Actions and attaches them to a release.
 
 ## Roadmap
 
-- Voice messages (local speech-to-text)
-- Image understanding with vision models
-- More computer skills behind the approval engine (files outside the workspace, mail)
+- Local image and video generation through ComfyUI (e.g. Wan 2.2)
+- Local speech-to-text (whisper.cpp)
+- Mail: read, summarise, draft (sending to a new person always asked)
 - Installing skills from a URL, with a review step
 - MCP (Model Context Protocol) tool servers
 

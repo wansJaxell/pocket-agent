@@ -25,7 +25,7 @@ jobs:
       - name: Install
         run: pip install . pyinstaller
       - name: Build one-file executable
-        run: pyinstaller --onefile --name PocketAgent --collect-submodules pocketagent.skills pocketagent/__main__.py
+        run: pyinstaller --onefile --name PocketAgent --collect-submodules pocketagent.skills --exclude-module numpy --exclude-module PIL --exclude-module cryptography --exclude-module Crypto --exclude-module yaml --exclude-module cffi --exclude-module setuptools pocketagent/__main__.py
       - name: Name it after the operating system
         shell: bash
         run: |

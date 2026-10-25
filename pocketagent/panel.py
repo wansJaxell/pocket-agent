@@ -206,7 +206,8 @@ class PanelServer:
                     new = result.pop("_session")
                     extra.append(("Set-Cookie", f"{panel.cookie}={new}; HttpOnly; SameSite=Strict; Path=/" if new
                                   else f"{panel.cookie}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"))
-                self._json(200, result or {"ok": True}, extra)
+                # only "nothing to say" becomes {"ok": true}: an empty list must stay a list
+                self._json(200, {"ok": True} if result is None or result == {} else result, extra)
 
             def _headers(self, status: int, content_type: str, length: int, csp: str, extra=()) -> None:
                 self.send_response(status)

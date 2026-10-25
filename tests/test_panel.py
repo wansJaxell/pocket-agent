@@ -135,3 +135,8 @@ def test_the_panel_is_english_unless_turkish_was_chosen(panel, client):
     assert '<html lang="en">' in client.get(panel.url, timeout=5).text
     panel.app.set_language("tr")
     assert '<html lang="tr">' in client.get(panel.url, timeout=5).text
+
+
+def test_an_empty_list_stays_a_list(panel, client):
+    # a fresh install has no chat history: the page expects [], not {"ok": true}
+    assert api(client, panel, "GET", "api/history").json() == []
