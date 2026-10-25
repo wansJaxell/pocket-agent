@@ -177,6 +177,112 @@ def test_specialist_settings_and_models_for_the_panel():
         {"name": "gpt-image-2.5", "category": "image", "output_modalities": ["image"], "paid_only": True}])))
     assert [m["id"] for m in studio.models("image", "pollinations")] == ["flux.1-schnell"]
     assert set(media.IMAGE) == {"pollinations", "openrouter", "custom"}
-    assert set(media.SPEECH) == {"pollinations", "local", "custom"}
+    assert set(media.SPEECH) == {"pollinations", "piper", "local", "custom"}
+    assert set(media.HEARING) == {"groq", "custom"}
     with pytest.raises(media.MediaError):
         studio.image("x", "1024x1024")                      # not set up
+
+
+# ---------- hearing (voice messages), seeing (photos), Piper ----------
+def test_voice_messages_are_written_down_by_groq_whisper():
+    studio, web, config = studio_with(("POST", "api.groq.com/openai/v1/audio/transcriptions",
+                                       response({"text": " Yarın toplantı var mı? "})),
+                                      hearing={"provider": "groq", "model": ""})
+    config.keys["groq"] = "gsk_x"
+    assert studio.transcribe(b"OggS-voice", "voice.ogg") == "Yarın toplantı var mı?"
+    _, url, kwargs = web.requests[0]
+    assert kwargs["files"]["file"] == ("voice.ogg", b"OggS-voice")
+    assert kwargs["data"]["model"] == "whisper-large-v3-turbo" and kwargs["headers"]["Authorization"] == "Bearer gsk_x"
+
+
+def test_hearing_needs_a_service_and_its_key():
+    studio, web, config = studio_with(hearing={"provider": "groq", "model": ""})
+    with pytest.raises(media.MediaError, match="Groq"):
+        studio.transcribe(b"x", "voice.ogg")
+    studio.config.media["hearing"] = {"provider": "", "model": ""}
+    with pytest.raises(media.MediaError, match="set up"):
+        studio.transcribe(b"x", "voice.ogg")
+
+
+def test_a_vision_model_looks_at_pictures():
+    studio, web, config = studio_with(("POST", "/chat/completions", response(
+        {"choices": [{"message": {"content": "Masada kırmızı bir elma var."}}]})),
+        vision={"provider": "openrouter", "model": "nvidia/nemotron-3.5-super-vl:free"})
+    config.keys["openrouter"] = "sk-or"
+    assert studio.look(PNG, "image/png", "Ne görüyorsun?") == "Masada kırmızı bir elma var."
+    sent = web.requests[0][2]["json"]
+    parts = sent["messages"][-1]["content"]
+    assert sent["model"] == "nvidia/nemotron-3.5-super-vl:free"
+    assert parts[0] == {"type": "text", "text": "Ne görüyorsun?"}
+    assert parts[1]["image_url"]["url"].startswith("data:image/png;base64,")
+
+
+def test_the_agent_can_look_at_a_picture_in_the_workspace(tmp_path):
+    studio, web, config = studio_with(("POST", "/chat/completions", response(
+        {"choices": [{"message": {"content": "A receipt for 120 TL."}}]})), vision={"provider": "openrouter", "model": "m"})
+    config.keys["openrouter"] = "sk-or"
+    ctx = context(tmp_path, studio)
+    (tmp_path / "ws" / "inbox").mkdir(parents=True)
+    (tmp_path / "ws" / "inbox" / "photo.jpg").write_bytes(b"\xff\xd8jpeg")
+    result = tools().call("look_at_image", {"path": "inbox/photo.jpg", "question": "What is this?"}, ctx)
+    assert result == "A receipt for 120 TL." and ctx.tainted_by          # text in a picture is outside content
+
+
+def make_zip(entries: dict) -> bytes:
+    import io
+    import zipfile
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as package:
+        for name, data in entries.items():
+            package.writestr(name, data)
+    return buffer.getvalue()
+
+
+def piper_web(zip_bytes):
+    return [("GET", "piper_windows_amd64.zip", binary(zip_bytes, "application/zip")),
+            ("GET", "tr_TR-dfki-medium.onnx.json", binary(b'{"audio": {"sample_rate": 22050}}', "application/json")),
+            ("GET", "tr_TR-dfki-medium.onnx", binary(b"onnx-model", "application/octet-stream"))]
+
+
+def test_piper_is_downloaded_and_unpacked_into_the_pocketagent_folder(home, monkeypatch):
+    monkeypatch.setattr(media.os, "name", "nt")
+    studio, web, _ = studio_with(*piper_web(make_zip({"piper/piper.exe": b"MZ", "piper/espeak-ng-data/tr": b"x"})))
+    studio.install_piper("tr_TR-dfki-medium")
+    assert (home / "piper" / "piper" / "piper.exe").read_bytes() == b"MZ"
+    assert (home / "piper" / "voices" / "tr_TR-dfki-medium.onnx").read_bytes() == b"onnx-model"
+    assert studio.piper_status() == {"installed": True, "voices": ["tr_TR-dfki-medium"], "supported": True}
+
+
+def test_a_piper_archive_cannot_write_outside_its_folder(home, monkeypatch):
+    monkeypatch.setattr(media.os, "name", "nt")
+    studio, _, _ = studio_with(*piper_web(make_zip({"../../evil.bat": b"bad", "piper/piper.exe": b"MZ"})))
+    with pytest.raises(media.MediaError, match="unsafe"):
+        studio.install_piper("tr_TR-dfki-medium")
+    assert not (home.parent / "evil.bat").exists()
+
+
+def test_piper_speaks_turkish_offline(home, monkeypatch):
+    monkeypatch.setattr(media.os, "name", "nt")
+    (home / "piper" / "piper").mkdir(parents=True)
+    (home / "piper" / "piper" / "piper.exe").write_bytes(b"MZ")
+    (home / "piper" / "voices").mkdir()
+    (home / "piper" / "voices" / "tr_TR-dfki-medium.onnx").write_bytes(b"onnx")
+    runs = []
+
+    def fake_piper(argv, input, **kwargs):
+        runs.append((argv, input))
+        with open(argv[argv.index("--output_file") + 1], "wb") as f:
+            f.write(b"RIFFwave")
+        return SimpleNamespace(returncode=0, stderr=b"")
+    config = Config()
+    config.media["speech"] = {"provider": "piper", "voice": "", "model": ""}
+    data, extension = Studio(config, run=fake_piper).speech("Merhaba, ben PocketAgent.")
+    assert (data, extension) == (b"RIFFwave", ".wav")
+    argv, text = runs[0]
+    assert argv[0].endswith("piper.exe") and argv[argv.index("--model") + 1].endswith("tr_TR-dfki-medium.onnx")
+    assert text == "Merhaba, ben PocketAgent.".encode("utf-8")
+
+
+def test_speech_text_is_cleaned_of_markdown():
+    assert media.speakable("**Sonuç:** `kod` ve [link](https://x.y)\n```python\nprint(1)\n```\n| a | b |") == \
+        "Sonuç: kod ve link a b"

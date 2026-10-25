@@ -62,6 +62,8 @@ ROUTES = {
                                                           r.text("voice")),
     ("POST", "specialist/key"): lambda r: r.app.save_service_key(r.text("service"), r.text("key")),
     ("POST", "specialist/try"): lambda r: r.app.try_specialist(r.text("kind")),
+    ("POST", "voice-reply"): lambda r: r.app.set_voice_reply(r.text("mode")),
+    ("POST", "piper/install"): lambda r: r.app.install_piper(r.text("voice") or "tr_TR-dfki-medium"),
     ("POST", "key"): lambda r: r.app.save_key(r.text("provider"), r.text("key"), r.text("base_url")),
     ("POST", "brains/add"): lambda r: r.app.add_brain(r.text("provider"), r.text("model"), r.body.get("free") is not False),
     ("POST", "brains/move"): lambda r: r.app.move_brain(r.body.get("index"), r.body.get("delta", 0)),

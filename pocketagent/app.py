@@ -96,6 +96,7 @@ class App:
         self._bot_stop: threading.Event | None = None
         self._verifier: str | None = None                 # OpenRouter login in progress
         self._catalog: dict[str, dict[str, dict]] = {}    # provider -> model id -> what the list said
+        self.piper_progress: dict = {"busy": False}       # downloading Piper (from the panel)
         self._services = threading.Event()
         self._stop = threading.Event()
         self.sessions: set[str] = set()                   # browsers that gave the panel password
@@ -400,27 +401,62 @@ class App:
     def _specialists(self) -> dict:
         key = self.config.keys.get("pollinations", "")
         services = {kind: [{"id": sid, "label": s.label, "paid": s.paid, "key_url": s.key_url}
-                           for sid, s in table.items()] for kind, table in (("image", media.IMAGE),
-                                                                            ("speech", media.SPEECH))}
-        return {**{kind: dict(self.config.media.get(kind) or {}) for kind in ("image", "speech", "writer")},
-                "services": services, "pollinations_key": mask(key) if key else ""}
+                           for sid, s in table.items()]
+                    for kind, table in (("image", media.IMAGE), ("speech", media.SPEECH), ("hearing", media.HEARING))}
+        kinds = ("image", "speech", "writer", "hearing", "vision")
+        return {**{kind: dict(self.config.media.get(kind) or {}) for kind in kinds},
+                "services": services, "pollinations_key": mask(key) if key else "",
+                "voice_reply": self.config.voice_reply, "piper": {**self.runtime.studio.piper_status(),
+                                                                  **self.piper_progress},
+                "piper_voices": list(media.PIPER_VOICES)}
 
     def set_specialist(self, kind: str, provider: str, model: str = "", voice: str = "") -> dict:
         """Choose who makes images, speech or long texts; an empty provider switches it off."""
-        choices = {"image": media.IMAGE, "speech": media.SPEECH, "writer": PROVIDERS}.get(kind)
+        choices = {"image": media.IMAGE, "speech": media.SPEECH, "writer": PROVIDERS, "hearing": media.HEARING,
+                   "vision": PROVIDERS}.get(kind)
         if choices is None:
             raise PanelError(f"Unknown specialist '{kind}'.")
         provider, model = (provider or "").strip(), (model or "").strip()
         if provider and provider not in choices:
             raise PanelError(f"Unknown service '{provider}'.")
-        if kind == "writer" and provider and not model:
-            raise PanelError("Choose the writer's model.")
+        if kind in ("writer", "vision") and provider and not model:
+            raise PanelError("Choose the model.")
         with self.lock:
             self.config.media[kind] = {"provider": provider, "model": model if provider else "",
                                        **({"voice": (voice or "").strip()} if kind == "speech" else {})}
             self.save()
         self.runtime.audit.write("specialist", kind=kind, provider=provider, model=model)
         return self._specialists()
+
+    def set_voice_reply(self, mode: str) -> None:
+        if mode not in ("off", "spoken", "always"):
+            raise PanelError("Unknown voice reply setting.")
+        with self.lock:
+            self.config.voice_reply = mode
+            self.save()
+
+    def install_piper(self, voice: str = media.DEFAULT_PIPER_VOICE) -> dict:
+        """Download Piper and a voice in the background; the panel shows the progress."""
+        if self.piper_progress.get("busy"):
+            raise PanelError("Piper is already being installed.")
+        if voice not in media.PIPER_VOICES:
+            raise PanelError("Unknown voice.")
+
+        def progress(name, done, total):
+            self.piper_progress.update(file=name, done=done, total=total)
+
+        def work():
+            try:
+                self.runtime.studio.install_piper(voice, progress)
+                self.notice(f"Piper is installed with the voice {voice}.")
+                self.runtime.audit.write("piper_installed", voice=voice)
+            except MediaError as error:
+                self.piper_progress["error"] = str(error)
+            finally:
+                self.piper_progress["busy"] = False
+        self.piper_progress = {"busy": True, "file": "", "done": 0, "total": 0, "error": ""}
+        threading.Thread(target=work, daemon=True).start()
+        return self.piper_progress
 
     def save_service_key(self, service: str, key: str) -> None:
         if service != "pollinations":
@@ -543,7 +579,7 @@ class App:
             t, r = self.config.telegram, self.runtime
             self._bot_stop = threading.Event()
             self.bot = TelegramBot(t.token, t.owner_chat_id, r.agent, r.registry, r.conversations, jobs=self.jobs,
-                                   tasks=r.tasks,
+                                   tasks=r.tasks, studio=r.studio, voice_reply=lambda: self.config.voice_reply,
                                    approvals=r.approvals, on_stop=self.emergency_stop,
                                    language=lambda: self.config.language)
             threading.Thread(target=self.bot.run_forever, args=(self._bot_stop,), daemon=True).start()

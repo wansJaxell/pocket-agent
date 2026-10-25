@@ -8,7 +8,7 @@ Paid specialists ask for approval every time, like any spending.
 from datetime import datetime
 
 from pocketagent.approvals import Action
-from pocketagent.media import MediaError
+from pocketagent.media import MEDIA_TYPES, MediaError
 from pocketagent.skills.files import _safe_path
 from pocketagent.tools import ToolContext, tool
 
@@ -74,6 +74,28 @@ def create_speech(ctx: ToolContext, text: str, voice: str = "") -> str:
         return f"The speech specialist could not make it: {error}"
     path = save_media(ctx, "speech", data, extension)
     return f"Audio saved as {path} (by {ctx.studio.describe('speech')}). The user gets it with your answer."
+
+
+@tool(untrusted_output=True)
+def look_at_image(ctx: ToolContext, path: str, question: str = "Describe this picture in detail, including any text in it.") -> str:
+    """Look at a picture in the workspace (a photo the user sent, a screenshot) with the vision specialist.
+
+    Args:
+        path: the picture in the workspace, e.g. "inbox/photo-20261025-0930.jpg" or "media/screenshot-1.png"
+        question: what to find out about it
+    """
+    if ctx.studio is None or not ctx.studio.ready("vision"):
+        return NOT_SET_UP.format(kind="vision")
+    target = _safe_path(ctx, path)
+    if not target.is_file():
+        return f"There is no picture '{path}'."
+    mime = MEDIA_TYPES.get(target.suffix.lower(), "")
+    if not mime.startswith("image/"):
+        return "This is not a picture (png, jpg, webp or gif)."
+    try:
+        return ctx.studio.look(target.read_bytes(), mime, question)
+    except MediaError as error:
+        return f"The vision specialist could not look at it: {error}"
 
 
 @tool(untrusted_output=True)

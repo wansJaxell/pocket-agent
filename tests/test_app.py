@@ -314,3 +314,20 @@ def test_a_pasted_openrouter_key_is_really_checked(home):
         app.save_key("openrouter", "sk-or-v1-typo")
     assert "openrouter" not in app.config.keys
     assert web.requests[0][1] == "https://openrouter.ai/api/v1/key"
+
+
+def test_hearing_vision_and_voice_replies_are_set_in_the_panel(home):
+    app, _ = make_app()
+    app.set_specialist("hearing", "groq", "")
+    app.set_specialist("vision", "openrouter", "nvidia/nemotron-3.5-super-vl:free")
+    app.set_voice_reply("spoken")
+    saved = cfg.load()
+    assert saved.media["hearing"]["provider"] == "groq" and saved.media["vision"]["model"].endswith("super-vl:free")
+    assert saved.voice_reply == "spoken"
+    state = app.state()["specialists"]
+    assert "groq" in [s["id"] for s in state["services"]["hearing"]] and state["voice_reply"] == "spoken"
+    assert "tr_TR-dfki-medium" in state["piper_voices"] and "installed" in state["piper"]
+    with pytest.raises(PanelError):
+        app.set_specialist("vision", "openrouter", "")          # a vision model must be named
+    with pytest.raises(PanelError):
+        app.set_voice_reply("sometimes")

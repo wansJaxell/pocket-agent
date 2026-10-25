@@ -302,6 +302,14 @@ en: {
  "sp.paid": "paid: asks every time", "sp.key": "Pollinations key (optional, free)", "sp.getkey": "Get a free key ↗",
  "sp.nokey": "Without a key, images come from Pollinations' classic model (slower) and speech is not available. A free key unlocks both and more models.",
  "sp.writer_hint": "The writer is one of your brains, e.g. a coding model for long code or documents.",
+ "sp.hearing": "👂 Hearing (voice messages)", "sp.vision": "👁 Seeing (photos, screenshots)",
+ "sp.hearing_hint": "Voice messages on Telegram are written down, then handled like text. Groq's key is free (step 1).",
+ "sp.vision_hint": "Choose a model that can see pictures, e.g. nvidia/nemotron-3.5-super-vl:free or google/gemma-4-31b-it:free on OpenRouter, or gemini-2.5-flash.",
+ "svc.groq": "Groq Whisper (free key)", "svc.piper": "Piper: natural voice on this computer (Turkish too, offline)",
+ "piper.install": "Install Piper with this voice (about 85 MB)", "piper.installing": "Downloading {file}: {done} / {total} MB",
+ "piper.ready": "Piper is installed:", "piper.windows": "Installing Piper from the panel works on Windows.",
+ "vr.label": "Voice replies on Telegram", "vr.off": "Off", "vr.spoken": "When I send a voice message", "vr.always": "Always",
+ "vr.hint": "The answer also arrives as a voice message, read by the speech specialist above (MP3 voices show as a voice bubble; WAV voices like Piper's as an audio file unless ffmpeg is installed).",
  "svc.pollinations": "Pollinations (free)", "svc.pollinations_key": "Pollinations (free key needed)",
  "svc.openrouter": "OpenRouter image models",
  "svc.custom": "Your own server (OpenAI-compatible)", "svc.local": "This computer's voices (offline)",
@@ -386,6 +394,14 @@ tr: {
  "sp.getkey": "Ücretsiz anahtar al ↗",
  "sp.nokey": "Anahtarsız görseller Pollinations'ın klasik modelinden gelir (daha yavaş), ses ise kullanılamaz. Ücretsiz anahtar ikisini ve daha fazla modeli açar.",
  "sp.writer_hint": "Yazar, beyinlerinden biridir; ör. uzun kod ya da belgeler için bir kod modeli.",
+ "sp.hearing": "👂 Duyma (sesli mesajlar)", "sp.vision": "👁 Görme (fotoğraf, ekran)",
+ "sp.hearing_hint": "Telegram'daki sesli mesajlar yazıya çevrilir, sonra yazı gibi işlenir. Groq'un anahtarı ücretsizdir (1. adım).",
+ "sp.vision_hint": "Görsel okuyabilen bir model seç, ör. OpenRouter'da nvidia/nemotron-3.5-super-vl:free ya da google/gemma-4-31b-it:free, veya gemini-2.5-flash.",
+ "svc.groq": "Groq Whisper (ücretsiz anahtar)", "svc.piper": "Piper: bu bilgisayarda doğal ses (Türkçe de, çevrimdışı)",
+ "piper.install": "Piper'ı bu sesle kur (yaklaşık 85 MB)", "piper.installing": "{file} indiriliyor: {done} / {total} MB",
+ "piper.ready": "Piper kurulu:", "piper.windows": "Piper'ı panelden kurmak Windows'ta çalışır.",
+ "vr.label": "Telegram'da sesli cevap", "vr.off": "Kapalı", "vr.spoken": "Sesli mesaj gönderdiğimde", "vr.always": "Her zaman",
+ "vr.hint": "Cevap ayrıca sesli mesaj olarak gelir; yukarıdaki ses uzmanı okur (MP3 sesler ses balonu olarak görünür; Piper gibi WAV sesler, ffmpeg kurulu değilse ses dosyası olarak gelir).",
  "svc.pollinations": "Pollinations (ücretsiz)", "svc.pollinations_key": "Pollinations (ücretsiz anahtar gerekir)",
  "svc.openrouter": "OpenRouter görsel modelleri",
  "svc.custom": "Kendi sunucun (OpenAI uyumlu)", "svc.local": "Bu bilgisayarın sesleri (çevrimdışı)",
@@ -741,6 +757,9 @@ function specialistRow(kind, saved) {
   if (kind === "writer") {
     S.brains.forEach(b => service.append(h("option", {value: b.provider + "|" + b.model,
       selected: current.provider === b.provider && current.model === b.model}, b.label)));
+  } else if (kind === "vision") {
+    S.providers.filter(p => p.has_key || p.local).forEach(p => service.append(h("option",
+      {value: p.id, selected: current.provider === p.id}, p.name)));
   } else {
     saved.services[kind].forEach(x => service.append(h("option", {value: x.id, selected: current.provider === x.id},
       t(kind === "speech" && x.id === "pollinations" ? "svc.pollinations_key" : "svc." + x.id)
@@ -749,15 +768,29 @@ function specialistRow(kind, saved) {
   const model = h("select", {"aria-label": t("sp.model")});
   const typed = h("input", {class: "grow", placeholder: t("sp.model"), value: current.model || "", "aria-label": t("sp.model")});
   const voice = h("input", {placeholder: t("sp.voice"), value: current.voice || "", "aria-label": t("sp.voice")});
+  const piperVoice = h("select", {"aria-label": t("sp.voice")}, saved.piper_voices.map(v => h("option",
+    {value: v, selected: v === (current.voice || "tr_TR-dfki-medium")}, v + (saved.piper.voices.includes(v) ? " ✓" : ""))));
   const result = h("div", {class: "try-result"});
-  const listed = id => id && kind !== "writer" && id !== "custom" && id !== "local";
+  const isPiper = () => kind === "speech" && service.value === "piper";
+  const listed = id => id && !["writer", "hearing", "vision"].includes(kind) && !["custom", "local", "piper"].includes(id);
+  let visionTyped = false;
   const layout = () => {
-    model.hidden = !listed(service.value);
-    typed.hidden = service.value !== "custom";
-    voice.hidden = kind !== "speech" || !service.value;
+    model.hidden = !(listed(service.value) || (kind === "vision" && service.value && !visionTyped));
+    typed.hidden = !(service.value === "custom" && kind !== "hearing" || (kind === "vision" && service.value && visionTyped));
+    voice.hidden = kind !== "speech" || !service.value || isPiper();
+    piperVoice.hidden = !isPiper();
   };
   const loadModels = async () => {
     fill(model, h("option", {value: ""}, t("sp.default")));
+    if (kind === "vision") {
+      if (!service.value) return layout();
+      const listedModels = (await api("models?provider=" + service.value).catch(() => ({models: []}))).models;
+      const seeing = listedModels.filter(m => (m.input || []).includes("image"));
+      visionTyped = !seeing.length;
+      fill(model, seeing.map(m => h("option", {value: m.id, selected: m.id === current.model},
+        m.id + (service.value === "openrouter" ? (m.free ? " · " + t("brain.free") : " · $") : ""))));
+      return layout();
+    }
     if (!listed(service.value)) return;
     const cacheKey = kind + "|" + service.value;
     if (!specialistModels[cacheKey])
@@ -767,12 +800,13 @@ function specialistRow(kind, saved) {
   };
   service.addEventListener("change", () => { layout(); loadModels(); });
   const save = h("button", {class: "btn primary", type: "button", text: t("save"), onclick: () => act(save, async () => {
-    let provider = service.value, chosen = provider === "custom" ? typed.value : model.value;
+    let provider = service.value;
+    let chosen = (provider === "custom" || (kind === "vision" && visionTyped)) ? typed.value : model.value;
     if (kind === "writer" && provider) {
       const split = provider.indexOf("|");
       [provider, chosen] = [provider.slice(0, split), provider.slice(split + 1)];
     }
-    await api("specialist", {kind, provider, model: chosen, voice: voice.value});
+    await api("specialist", {kind, provider, model: chosen, voice: isPiper() ? piperVoice.value : voice.value});
     toast(t("saved"));
     await refresh();
   })});
@@ -782,16 +816,37 @@ function specialistRow(kind, saved) {
     fill(result, outcome.text ? h("p", {text: outcome.text}) : null);
     for (const path of outcome.files) await attach(result, path);
   })});
+  const canTry = current.provider && ["image", "speech", "writer"].includes(kind);
   layout();
   loadModels();
-  return h("div", {class: "sp-row"}, h("b", {class: "sp-kind", text: t("sp." + kind)}), service, model, typed, voice, save,
-    current.provider ? tryIt : null, result,
-    kind === "writer" ? h("p", {class: "hint", text: t("sp.writer_hint")}) : null);
+  const hints = {writer: "sp.writer_hint", hearing: "sp.hearing_hint", vision: "sp.vision_hint"};
+  return h("div", {class: "sp-row"}, h("b", {class: "sp-kind", text: t("sp." + kind)}), service, model, typed, voice,
+    piperVoice, save, canTry ? tryIt : null, result,
+    kind === "speech" ? piperBox(saved, piperVoice) : null,
+    hints[kind] ? h("p", {class: "hint", text: t(hints[kind])}) : null);
+}
+
+function piperBox(saved, piperVoice) {
+  const piper = saved.piper, box = h("div", {class: "try-result"});
+  if (piper.busy) {
+    const mb = n => (n / 1048576).toFixed(1);
+    return fill(box, h("p", {class: "hint", text: t("piper.installing").replace("{file}", piper.file || "…")
+      .replace("{done}", mb(piper.done || 0)).replace("{total}", piper.total ? mb(piper.total) : "?")}));
+  }
+  if (!piper.supported) return fill(box, h("p", {class: "hint", text: t("piper.windows")}));
+  const install = h("button", {class: "btn", type: "button", text: t("piper.install"), onclick: () => act(install, async () => {
+    await api("piper/install", {voice: piperVoice.value});
+    await refresh();
+  })});
+  return fill(box,
+    piper.error ? h("p", {class: "note bad", text: piper.error}) : null,
+    piper.installed ? h("p", {class: "ok", text: t("piper.ready") + " " + piper.voices.join(", ")}) : null,
+    !piper.installed || !piper.voices.includes(piperVoice.value) ? install : null);
 }
 
 function renderSpecialists() {
   const saved = S.specialists;
-  if (!changed("specialists", [saved, S.brains.map(b => b.label)])) return;
+  if (!changed("specialists", [saved, S.brains.map(b => b.label), S.providers.map(p => p.has_key)])) return;
   const key = h("input", {class: "grow", type: "password", placeholder: t("sp.key"), autocomplete: "off", "aria-label": t("sp.key")});
   const saveKey = h("button", {class: "btn", type: "button", text: t("save"), onclick: () => act(saveKey, async () => {
     await api("specialist/key", {service: "pollinations", key: key.value});
@@ -799,7 +854,13 @@ function renderSpecialists() {
     toast(t("saved"));
     await refresh();
   })});
-  fill($("specialists"), ["image", "speech", "writer"].map(kind => specialistRow(kind, saved)),
+  const reply = h("select", {"aria-label": t("vr.label"), onchange: () => act(null, async () => {
+    await api("voice-reply", {mode: reply.value});
+    toast(t("saved"));
+  })}, ["off", "spoken", "always"].map(mode => h("option", {value: mode, selected: saved.voice_reply === mode}, t("vr." + mode))));
+  fill($("specialists"), ["image", "speech", "hearing", "vision", "writer"].map(kind => specialistRow(kind, saved)),
+    h("div", {class: "row"}, h("b", {text: t("vr.label")}), reply),
+    h("p", {class: "hint", text: t("vr.hint")}),
     h("h3", {text: t("sp.key")}),
     h("div", {class: "row"}, key, saveKey, h("a", {class: "linkbtn", href: "https://enter.pollinations.ai/keys",
       target: "_blank", rel: "noopener noreferrer", text: t("sp.getkey")})),

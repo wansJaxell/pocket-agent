@@ -6,23 +6,30 @@ result out, and the result is a file in the workspace that the panel shows and T
     image   Pollinations (free: no key needed; a free key unlocks more models)
             OpenRouter image models (paid: every image asks for approval, like any spending)
             your own OpenAI-compatible server (/v1/images/generations)
-    speech  Pollinations (free key needed), this computer's own voices (offline), your own server (/v1/audio/speech)
+    speech  Pollinations (free key needed), Piper (natural voices, Turkish too, on this computer, offline),
+            Windows/macOS voices (offline), your own server (/v1/audio/speech)
+    hearing Groq Whisper (free key) or your own server: voice messages become text
+    vision  a model that can see pictures (photos sent on Telegram, screenshots)
     writer  any of your brains, e.g. a coding model for long code or documents
 
 Prompts sent to these services leave the computer, so every specialist is off until the user picks one.
 """
 
 import base64
+import io
 import os
 import re
+import shutil
 import subprocess
 import tempfile
+import zipfile
 from dataclasses import dataclass
+from pathlib import Path
 from urllib.parse import quote
 
 import requests
 
-from pocketagent.config import BrainConfig, Config
+from pocketagent.config import BrainConfig, Config, home_dir
 from pocketagent.llm import PROVIDERS, Brain, BrainError, strip_thinking
 
 
@@ -43,9 +50,21 @@ IMAGE = {
 SPEECH = {
     "pollinations": Service("Pollinations (free key needed)", key="pollinations",
                             key_url="https://enter.pollinations.ai/keys"),
+    "piper": Service("Piper: natural voices on this computer (free, offline, Turkish too)"),
     "local": Service("This computer's voices (free, offline)"),
     "custom": Service("Your OpenAI-compatible server", key="custom"),
 }
+HEARING = {
+    "groq": Service("Groq Whisper (free key)", key="groq", key_url="https://console.groq.com/keys"),
+    "custom": Service("Your OpenAI-compatible server", key="custom"),
+}
+# Piper: one program and one model file per voice, from Piper's own releases (about 85 MB in all)
+PIPER_ZIP = "https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_windows_amd64.zip"
+PIPER_VOICES = {"tr_TR-dfki-medium": "tr/tr_TR/dfki/medium/tr_TR-dfki-medium",
+                "en_US-lessac-medium": "en/en_US/lessac/medium/en_US-lessac-medium"}
+VOICE_URL = "https://huggingface.co/rhasspy/piper-voices/resolve/main/{path}"
+DEFAULT_PIPER_VOICE = "tr_TR-dfki-medium"
+VOICE_NOTES = {".mp3", ".ogg", ".oga", ".m4a"}      # what Telegram shows as a voice bubble
 CLASSIC_IMAGE = "https://image.pollinations.ai/prompt/"      # works without a key (rate-limited)
 GATEWAY = "https://gen.pollinations.ai"                      # needs a free key for images
 EXTENSIONS = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp", "image/gif": ".gif",
@@ -73,6 +92,50 @@ def media_kind(path) -> str:
 
 class MediaError(Exception):
     """The specialist is not set up, or its service refused."""
+
+
+def piper_dir() -> Path:
+    return home_dir() / "piper"
+
+
+def piper_program() -> Path:
+    return piper_dir() / "piper" / ("piper.exe" if os.name == "nt" else "piper")
+
+
+def speakable(text: str, limit: int = 1200) -> str:
+    """An answer as it should be read aloud: no Markdown, code or links."""
+    text = re.sub(r"```.*?```", " ", text, flags=re.DOTALL)
+    text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
+    text = re.sub(r"https?://\S+", " ", text)
+    text = re.sub(r"^\s*[-•]\s+", " ", text, flags=re.MULTILINE)
+    text = re.sub(r"[*_`~]", "", text)                  # emphasis marks go away without a gap
+    text = " ".join(re.sub(r"[#>|]", " ", text).split())
+    if len(text) > limit:
+        cut = max(text.rfind(mark, 0, limit) for mark in ".!?")
+        text = text[:cut + 1] if cut > limit // 2 else text[:limit]
+    return text
+
+
+def to_voice_note(data: bytes, extension: str, run=subprocess.run) -> tuple[bytes, str]:
+    """Telegram shows MP3/OGG/M4A as a voice bubble; a WAV becomes OGG when ffmpeg is installed."""
+    ffmpeg = shutil.which("ffmpeg")
+    if extension in VOICE_NOTES or not ffmpeg:
+        return data, extension
+    folder = tempfile.mkdtemp()
+    source, target = os.path.join(folder, "in" + extension), os.path.join(folder, "out.ogg")
+    try:
+        with open(source, "wb") as f:
+            f.write(data)
+        result = run([ffmpeg, "-y", "-loglevel", "error", "-i", source, "-c:a", "libopus", "-b:a", "32k", target],
+                     capture_output=True, timeout=120)
+        if result.returncode == 0 and os.path.exists(target):
+            with open(target, "rb") as f:
+                return f.read(), ".ogg"
+    except (OSError, subprocess.SubprocessError):
+        pass
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
+    return data, extension
 
 
 def _size(size: str) -> tuple[int, int]:
@@ -179,6 +242,8 @@ class Studio:
             return reply.content, EXTENSIONS.get(reply.headers.get("Content-Type", "").split(";")[0], ".mp3")
         if provider == "local":
             return self._local_speech(text, voice)
+        if provider == "piper":
+            return self._piper(text, voice)
         if provider == "custom":
             reply = self._check(self.http.post(
                 self.config.custom_url.rstrip("/") + "/audio/speech", timeout=180,
@@ -214,6 +279,117 @@ class Studio:
                 os.remove(path)
             except OSError:
                 pass
+
+    # ---------- Piper ----------
+    def _piper(self, text: str, voice: str) -> tuple[bytes, str]:
+        program = piper_program()
+        model = piper_dir() / "voices" / f"{voice or DEFAULT_PIPER_VOICE}.onnx"
+        if not program.exists() or not model.exists():
+            raise MediaError("Piper is not installed yet: install it in the panel (Specialists, Speech)")
+        handle, out = tempfile.mkstemp(suffix=".wav")
+        os.close(handle)
+        try:
+            result = self.run([str(program), "--model", str(model), "--output_file", out],
+                              input=text[:20000].encode("utf-8"), capture_output=True, timeout=300,
+                              cwd=str(program.parent), creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            if result.returncode != 0:
+                raise MediaError(f"Piper failed: {(result.stderr or b'').decode('utf-8', 'replace').strip()[:200]}")
+            with open(out, "rb") as f:
+                return f.read(), ".wav"
+        finally:
+            try:
+                os.remove(out)
+            except OSError:
+                pass
+
+    def piper_status(self) -> dict:
+        voices = piper_dir() / "voices"
+        installed = sorted(p.name[:-5] for p in voices.glob("*.onnx")) if voices.is_dir() else []
+        return {"installed": piper_program().exists() and bool(installed), "voices": installed,
+                "supported": os.name == "nt"}
+
+    def _download(self, url: str, progress=None) -> bytes:
+        try:
+            reply = self.http.get(url, timeout=600, stream=True)
+        except OSError as error:
+            raise MediaError(f"cannot download {url}: {error}") from None
+        self._check(reply, "The download")
+        if not hasattr(reply, "iter_content"):
+            return reply.content
+        total, chunks, done = int(reply.headers.get("Content-Length") or 0), [], 0
+        for chunk in reply.iter_content(chunk_size=1 << 20):
+            chunks.append(chunk)
+            done += len(chunk)
+            if progress:
+                progress(url.rsplit("/", 1)[-1], done, total)
+        return b"".join(chunks)
+
+    def install_piper(self, voice: str = DEFAULT_PIPER_VOICE, progress=None) -> dict:
+        """Download Piper and a voice into the PocketAgent folder (Windows)."""
+        if os.name != "nt":
+            raise MediaError("installing Piper from the panel works on Windows for now")
+        if voice not in PIPER_VOICES:
+            raise MediaError(f"unknown Piper voice '{voice}'")
+        folder = piper_dir()
+        folder.mkdir(parents=True, exist_ok=True)
+        if not piper_program().exists():
+            with zipfile.ZipFile(io.BytesIO(self._download(PIPER_ZIP, progress))) as archive:
+                root = folder.resolve()
+                for member in archive.namelist():        # check every path before writing anything
+                    target = (root / member).resolve()
+                    if target != root and root not in target.parents:
+                        raise MediaError(f"the Piper archive has an unsafe path: {member}")
+                archive.extractall(root)
+        voices = folder / "voices"
+        voices.mkdir(exist_ok=True)
+        for suffix in (".onnx.json", ".onnx"):
+            target = voices / f"{voice}{suffix}"
+            if not target.exists():
+                data = self._download(VOICE_URL.format(path=PIPER_VOICES[voice] + suffix), progress)
+                target.with_suffix(target.suffix + ".part").write_bytes(data)
+                target.with_suffix(target.suffix + ".part").replace(target)
+        return self.piper_status()
+
+    # ---------- hearing and seeing ----------
+    def transcribe(self, data: bytes, filename: str) -> str:
+        """A voice message as text."""
+        settings = self.settings("hearing")
+        provider, model = settings.get("provider", ""), settings.get("model", "")
+        if provider == "groq":
+            key = self._key("groq")
+            if not key:
+                raise MediaError("Groq needs its free key for voice messages: save one in the panel (step 1, Groq)")
+            url, headers, model, name = (PROVIDERS["groq"].base_url + "/audio/transcriptions",
+                                         {"Authorization": f"Bearer {key}"}, model or "whisper-large-v3-turbo", "Groq")
+        elif provider == "custom":
+            key = self._key("custom")
+            url, headers, model, name = (self.config.custom_url.rstrip("/") + "/audio/transcriptions",
+                                         {"Authorization": f"Bearer {key}"} if key else {}, model or "whisper-1",
+                                         "Your server")
+        else:
+            raise MediaError("no hearing specialist is set up")
+        try:
+            reply = self.http.post(url, headers=headers, files={"file": (filename, data)},
+                                   data={"model": model, "response_format": "json"}, timeout=180)
+        except OSError as error:
+            raise MediaError(f"cannot reach {name}: {error}") from None
+        return (self._check(reply, name).json().get("text") or "").strip()
+
+    def look(self, image: bytes, mime: str, question: str) -> str:
+        """Ask the vision specialist about a picture."""
+        settings = self.settings("vision")
+        provider, model = settings.get("provider", ""), settings.get("model", "")
+        if provider not in PROVIDERS or not model:
+            raise MediaError("no vision specialist is set up: choose a model that can see pictures in the panel")
+        base_url = self.config.custom_url if provider == "custom" else PROVIDERS[provider].base_url
+        brain = Brain(self.config.with_key(BrainConfig(provider, base_url, model)), http=self.http)
+        picture = f"data:{mime};base64,{base64.b64encode(image).decode('ascii')}"
+        try:
+            reply = brain.chat([{"role": "user", "content": [{"type": "text", "text": question},
+                                                             {"type": "image_url", "image_url": {"url": picture}}]}])
+        except BrainError as error:
+            raise MediaError(str(error)) from None
+        return strip_thinking(reply.content)
 
     # ---------- the writer ----------
     def write(self, task: str) -> str:

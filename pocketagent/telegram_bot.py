@@ -8,13 +8,17 @@ Uses long polling, so it works on a home computer without a public server.
 """
 
 import html
+import io
 import re
 import threading
 import time
 
 import requests
 
-from pocketagent.media import media_kind
+from pocketagent.media import VOICE_NOTES, MediaError, media_kind, speakable, to_voice_note
+
+FILE_API = "https://api.telegram.org/file/bot{token}/{path}"
+MAX_DOWNLOAD = 20_000_000      # Telegram lets bots download files up to 20 MB
 
 API = "https://api.telegram.org/bot{token}/{method}"
 MESSAGE_LIMIT = 4000   # Telegram allows 4096 characters per message
@@ -148,13 +152,16 @@ def footer(answer) -> str:
 
 class TelegramBot:
     def __init__(self, token: str, owner_chat_id: int, agent, registry, conversations, http=requests,
-                 jobs=None, approvals=None, on_stop=None, language=None, tasks=None):
+                 jobs=None, approvals=None, on_stop=None, language=None, tasks=None, studio=None,
+                 voice_reply=None):
         self.token, self.owner = token, int(owner_chat_id)
         self.agent, self.registry, self.conversations, self.http = agent, registry, conversations, http
         self.jobs = jobs            # a JobQueue: answers are worked out there, so polling never waits
         self.approvals = approvals  # the ApprovalEngine: buttons answer its requests
         self.on_stop = on_stop      # called by /dur with "telegram"; returns a summary
         self.tasks = tasks          # the TaskStore, for /tasks
+        self.studio = studio        # media.Studio: hears voice messages, speaks answers
+        self.voice_reply = voice_reply or (lambda: "off")   # "off", "spoken" or "always"
         self.language = language or (lambda: "en")
         self._refused: set[int] = set()
         self._approval_messages: dict[str, int] = {}
@@ -193,11 +200,12 @@ class TelegramBot:
                 self.send(chat_id, "This is a private agent.")
                 self._refused.add(chat_id)
             return
-        if not text:
-            self.send(chat_id, "I can only read text messages for now.")
+        has_media = any(kind in message for kind in ("voice", "audio", "video_note", "photo", "document"))
+        if not text and not has_media:
+            self.send(chat_id, "I can read text, voice messages, photos and files.")
             return
 
-        command = text.split()[0].lower().split("@")[0]
+        command = text.split()[0].lower().split("@")[0] if text.startswith("/") and not has_media else ""
         if command in ("/dur", "/stop"):             # handled here at once, never queued behind a job
             summary = self.on_stop("telegram") if self.on_stop else {}
             self.send(chat_id, self.stopped_text(summary))
@@ -216,17 +224,85 @@ class TelegramBot:
         elif command in ("/rules", "/kurallar"):
             self.send(chat_id, self.rules_text())
         elif self.jobs:
-            self.jobs.submit(f"telegram: {text[:40]}", lambda: self.answer(chat_id, text), source="telegram")
+            self.jobs.submit(f"telegram: {text[:40] or 'media'}", lambda: self.process(chat_id, message),
+                             source="telegram")
         else:
-            self.answer(chat_id, text)
+            self.process(chat_id, message)
 
-    def answer(self, chat_id, text: str) -> None:
+    # ---------- voice messages, photos, files ----------
+    def download(self, file_id: str) -> bytes:
+        info = self.call("getFile", file_id=file_id).get("result") or {}
+        if not info.get("file_path"):
+            raise MediaError("Telegram did not give the file")
+        if (info.get("file_size") or 0) > MAX_DOWNLOAD:
+            raise MediaError("the file is larger than 20 MB, the most Telegram lets a bot download")
+        reply = self.http.get(FILE_API.format(token=self.token, path=info["file_path"]), timeout=120)
+        if reply.status_code >= 400:
+            raise MediaError(f"Telegram answered HTTP {reply.status_code} for the file")
+        return reply.content
+
+    def save_upload(self, file_id: str, filename: str) -> str:
+        """Save a file sent on Telegram in workspace/inbox under a safe name; returns its workspace path."""
+        safe = re.sub(r"[^\w.-]+", "_", filename.replace("\\", "/").rsplit("/", 1)[-1]).strip("._") or "file"
+        folder = self.agent.workspace / "inbox"
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / safe
+        path.write_bytes(self.download(file_id))
+        return f"inbox/{path.name}"
+
+    def process(self, chat_id, message: dict) -> None:
+        """Turn a message (text, voice, photo or file) into words for the agent, then answer."""
+        text = (message.get("text") or message.get("caption") or "").strip()
+        spoken = False
+        try:
+            sound = message.get("voice") or message.get("audio") or message.get("video_note")
+            if sound:
+                if not self.studio or not self.studio.ready("hearing"):
+                    self.send(chat_id, "To understand voice messages, choose a hearing specialist in the panel "
+                                       "(Specialists; Groq's free key works).")
+                    return
+                transcript = self.studio.transcribe(self.download(sound["file_id"]), "voice.ogg")
+                if not transcript:
+                    self.send(chat_id, "I could not make out any words in that voice message.")
+                    return
+                self.send(chat_id, f"🎤 *{transcript}*")
+                text, spoken = (transcript + ("\n" + text if text else "")), True
+            elif message.get("photo"):
+                biggest = max(message["photo"], key=lambda p: p.get("width", 0) * p.get("height", 1))
+                path = self.save_upload(biggest["file_id"], f"photo-{time.strftime('%Y%m%d-%H%M%S')}.jpg")
+                text = f"[The user sent a photo, saved as {path}. Look at it with look_at_image.]\n{text}".strip()
+            elif message.get("document"):
+                document = message["document"]
+                path = self.save_upload(document["file_id"], f"{time.strftime('%Y%m%d-%H%M%S')}-"
+                                                             f"{document.get('file_name') or 'file'}")
+                hint = ("look_at_image" if (document.get("mime_type") or "").startswith("image/") else "read_document")
+                text = f"[The user sent a file, saved as {path}. Read it with {hint}.]\n{text}".strip()
+        except (MediaError, requests.RequestException, OSError) as error:
+            self.send(chat_id, f"⚠️ {error}")
+            return
+        self.answer(chat_id, text, spoken=spoken)
+
+    def speak(self, chat_id, text: str) -> None:
+        """Send the answer as a voice message too (a voice bubble for MP3/OGG, an audio player for WAV)."""
+        try:
+            data, extension = to_voice_note(*self.studio.speech(speakable(text)))
+        except MediaError as error:
+            self.send(chat_id, f"(No voice reply: {error})")
+            return
+        method, field = ("sendVoice", "voice") if extension in VOICE_NOTES else ("sendAudio", "audio")
+        try:
+            self.http.post(API.format(token=self.token, method=method), data={"chat_id": chat_id},
+                           files={field: (f"answer{extension}", io.BytesIO(data))}, timeout=120)
+        except requests.RequestException:
+            pass
+
+    def answer(self, chat_id, text: str, spoken: bool = False) -> None:
         done = threading.Event()
         threading.Thread(target=self._keep_typing, args=(chat_id, done), daemon=True).start()
-        files = []
+        files, said = [], ""
         try:
             answer = self.agent.run(chat_id, text, source="telegram")
-            reply, files = answer.text + footer(answer), answer.files
+            reply, files, said = answer.text + footer(answer), answer.files, answer.text
         except Exception as error:   # brain offline, bad key, ...
             reply = f"⚠️ I could not reach my brain: {type(error).__name__}: {error}"
         finally:
@@ -234,6 +310,9 @@ class TelegramBot:
         self.send(chat_id, reply)
         for relative in files:
             self.send_file(chat_id, relative)
+        mode = self.voice_reply()
+        if said and self.studio and (mode == "always" or (mode == "spoken" and spoken)) and self.studio.ready("speech"):
+            self.speak(chat_id, said)
 
     def send_file(self, chat_id, relative: str) -> None:
         """Send a workspace file: images as photos, audio as audio, anything else as a document."""

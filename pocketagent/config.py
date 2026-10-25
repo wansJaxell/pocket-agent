@@ -85,7 +85,9 @@ class Config:
         "enabled": False, "count": 5, "min_context": 128000, "last": "", "skip": []})
     media: dict = field(default_factory=lambda: {       # specialists; all off until the user picks one
         "image": {"provider": "", "model": ""}, "speech": {"provider": "", "model": "", "voice": ""},
-        "writer": {"provider": "", "model": ""}})
+        "writer": {"provider": "", "model": ""}, "hearing": {"provider": "", "model": ""},
+        "vision": {"provider": "", "model": ""}})
+    voice_reply: str = "off"        # Telegram: "off", "spoken" (answer a voice message with voice) or "always"
     approval_timeout: int = 600     # seconds to wait for a yes/no before refusing
 
     @property
