@@ -1,6 +1,7 @@
 """Specialists: the agent writes the prompt, another free model makes the image, the voice or the text."""
 
 import base64
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -315,3 +316,13 @@ def test_piper_speaks_turkish_offline(home, monkeypatch):
 def test_speech_text_is_cleaned_of_markdown():
     assert media.speakable("**Sonuç:** `kod` ve [link](https://x.y)\n```python\nprint(1)\n```\n| a | b |") == \
         "Sonuç: kod ve link a b"
+
+
+def test_ffmpeg_installed_while_pocketagent_runs_is_found(tmp_path, monkeypatch):
+    """winget adds ffmpeg to the PATH saved in Windows; running programs only see it after a new login."""
+    for name in ("ffmpeg", "ffmpeg.exe"):
+        (tmp_path / name).write_bytes(b"MZ")
+        (tmp_path / name).chmod(0o755)
+    monkeypatch.setenv("PATH", "")
+    assert media.find_ffmpeg(saved_path=lambda: "") is None
+    assert Path(media.find_ffmpeg(saved_path=lambda: str(tmp_path))).parent == tmp_path

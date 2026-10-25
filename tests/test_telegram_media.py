@@ -122,7 +122,7 @@ def test_a_file_is_saved_in_the_inbox_with_a_safe_name(make_runtime):
 
 
 def test_always_speaking_and_wav_voices_without_ffmpeg(make_runtime, monkeypatch):
-    monkeypatch.setattr(media.shutil, "which", lambda name: None)
+    monkeypatch.setattr(media.shutil, "which", lambda name, path=None: None)
     bot, http, _, _ = bot_with(make_runtime, say("Tamam."), studio=FakeStudio(extension=".wav"), voice_reply="always")
     bot.handle({"chat": {"id": OWNER}, "text": "selam"})
     assert http.uploads() == [("sendAudio", {"audio": ("answer.wav", b"voice-bytes")})]   # a player, not a bubble

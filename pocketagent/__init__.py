@@ -1,3 +1,3 @@
 """PocketAgent: a small, local-first AI agent with pluggable skills."""
 
-__version__ = "0.5.2"
+__version__ = "0.5.3"

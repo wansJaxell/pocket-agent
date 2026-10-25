@@ -203,9 +203,30 @@ def speakable(text: str, limit: int = 1200) -> str:
     return text
 
 
+def _saved_windows_path() -> str:
+    """The PATH as Windows saved it: it includes programs installed after PocketAgent started (winget)."""
+    if os.name != "nt":
+        return ""
+    import winreg
+    folders = []
+    for root, key in ((winreg.HKEY_CURRENT_USER, "Environment"),
+                      (winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment")):
+        try:
+            with winreg.OpenKey(root, key) as opened:
+                folders.append(os.path.expandvars(winreg.QueryValueEx(opened, "Path")[0]))
+        except OSError:
+            continue
+    return os.pathsep.join(folders)
+
+
+def find_ffmpeg(saved_path=_saved_windows_path) -> str | None:
+    saved = saved_path()
+    return shutil.which("ffmpeg") or (shutil.which("ffmpeg", path=saved) if saved else None)
+
+
 def to_voice_note(data: bytes, extension: str, run=subprocess.run) -> tuple[bytes, str]:
     """Telegram shows MP3/OGG/M4A as a voice bubble; a WAV becomes OGG when ffmpeg is installed."""
-    ffmpeg = shutil.which("ffmpeg")
+    ffmpeg = find_ffmpeg()
     if extension in VOICE_NOTES or not ffmpeg:
         return data, extension
     folder = tempfile.mkdtemp()
