@@ -127,7 +127,7 @@ class Telegram:
 
 def telegram_bot(make_runtime, *replies, jobs=None):
     runtime, brain = make_runtime(*replies)
-    runtime.config.set_brains([NVIDIA, GROQ])
+    runtime.config.set_brains([replace(NVIDIA), replace(GROQ)])
     runtime.config.keys = {"nvidia": "n", "groq": "g"}
     http = Telegram()
     bot = TelegramBot("TOKEN", OWNER, runtime.agent, runtime.registry, runtime.conversations, http=http,
@@ -176,3 +176,11 @@ def test_a_message_that_has_to_wait_says_so(make_runtime):
     bot.handle({"chat": {"id": OWNER}, "text": "selam"})
     assert http.last()["text"].startswith("⏳")
     release.set()
+
+
+def test_the_bot_shows_its_commands_in_telegrams_menu(make_runtime):
+    bot, http, _, _ = telegram_bot(make_runtime)
+    bot.announce_commands()
+    menus = {(p or {}).get("language_code", ""): [c["command"] for c in p["commands"]]
+             for m, p in http.sent if m == "setMyCommands"}
+    assert "brain" in menus[""] and "beyin" in menus["tr"] and "dur" in menus["tr"]

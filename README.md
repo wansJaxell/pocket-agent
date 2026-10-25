@@ -8,13 +8,17 @@ or from Telegram on any phone. It can use your computer too, but only what you a
 
 - **One file to start:** download `PocketAgent.exe`, double-click, and the setup panel opens in your browser
 - **Free brains, with fallbacks:** OpenRouter (sign in, no key to copy), Groq, Google AI Studio, NVIDIA,
-  GitHub Models, Cerebras, Ollama, LM Studio, or any OpenAI-compatible API. If one runs out of free
-  credit, the next one answers, and every answer says which brain wrote it. OpenRouter's free models
-  (several with 1M-token context) can be added and kept up to date automatically
+  Cerebras, Ollama, LM Studio, or any OpenAI-compatible API. If one runs out of free credit, the next
+  one answers, and every answer says which brain wrote it. OpenRouter's free models (several with
+  1M-token context) can be added and kept up to date automatically
+- **Switch brains any time:** every answer has a **Try another brain** button, `/brain` in Telegram
+  puts another one first, and the agent itself switches when you ask or when a task needs a brain
+  that can see pictures
 - **Specialists:** the agent writes a prompt and hands it to an image, speech or writing model; the
   picture, audio or file comes back in the chat and on Telegram
-- **Telegram with your voice:** send voice messages and photos; it can answer with a voice message,
-  in Turkish too, with Piper running offline on your computer
+- **Telegram with your voice:** send voice messages and photos; it can answer with a voice message in
+  25 languages (English, Spanish, German, French, Turkish, Arabic, Chinese…), with Piper running
+  offline on your computer, which picks the voice from the language of the answer
 - **Documents:** reads Word, Excel, PowerPoint and PDF files, writes Word and Excel files
 - **Scheduled tasks:** "every weekday at 08:00, send me the weather"
 - **A real browser:** its own Edge or Chrome window reads pages after their JavaScript ran, clicks and types
@@ -23,7 +27,7 @@ or from Telegram on any phone. It can use your computer too, but only what you a
 - **Computer use with approvals:** commands, the browser, screenshots, clipboard, opening programs; off
   by default, every action needs your OK, and one button stops everything
 - **English or Turkish** interface (English by default)
-- **Small:** two pure-Python packages (`requests`, and `pypdf` for PDF files), a single executable, 275 tests
+- **Small:** two pure-Python packages (`requests`, and `pypdf` for PDF files), a single executable, 315 tests
 
 ![Telegram chat](docs/telegram.png)
 
@@ -105,11 +109,13 @@ EN/TR language switch (English until you pick Türkçe) and the **STOP** button.
 | [Groq](https://console.groq.com/keys) | free tier | very fast |
 | [Google AI Studio](https://aistudio.google.com/apikey) (Gemini) | free tier | ⚠️ on the free tier your messages may be used to train Google's models |
 | [NVIDIA build.nvidia.com](https://build.nvidia.com) | free tier | Nemotron models |
-| [GitHub Models](https://github.com/settings/personal-access-tokens/new) | free with a GitHub account | fine-grained token with the *Models: Read* permission |
 | [Cerebras](https://cloud.cerebras.ai) | free tier | very fast |
 | [Ollama](https://ollama.com) | free | everything stays on your PC: `ollama pull qwen3.5:9b` |
 | [LM Studio](https://lmstudio.ai) | free | everything stays on your PC: start its local server |
 | Custom | | any OpenAI-compatible address, e.g. `http://192.168.1.5:11434/v1` |
+
+GitHub Models was retired by GitHub on 30 July 2026, so it is no longer offered; GitHub brains saved
+by an older version stay in the list marked *retired* and are skipped until you remove them.
 
 **Fallbacks.** The first brain in your list answers. If it answers HTTP 402 (out of credit),
 403 (refused), 404 (model gone), 408, 429 (rate-limited) or 5xx (down), the next *free* brain in your
@@ -119,8 +125,15 @@ Under each answer you see the brain that wrote it, e.g. `🧠 Gemini · gemini-2
 
 **Switching brains off.** Every brain, and every provider as a whole, has an on/off switch: switched-off
 brains stay in the list but are never asked. Brains without a key are skipped too, and a saved key
-can be deleted (e.g. a wrong one). NVIDIA's and GitHub's model lists answer any key, so their keys are
-checked with one tiny request when you save them.
+can be deleted (e.g. a wrong one). NVIDIA's model list answers any key, so its keys are checked with
+one tiny request when you save them.
+
+**Switching brains.** Not happy with an answer? Press **🔁 Try another brain** under it (in the panel
+or on Telegram): the same question goes to your other brains, leaving out the one that just answered,
+and the new answer replaces the old one in the conversation. To change the first brain for good, move
+it to the top with ↑ in the panel, tap it after `/brain` (`/beyin`) in Telegram, or just tell the agent
+("use Gemini from now on"); the agent also switches by itself when it needs a brain that sees pictures.
+After it has read a web page or a file, a switch asks for your approval first.
 
 **OpenRouter's free limit.** Free OpenRouter models allow 20 requests a minute and **50 a day for the
 whole account** (1000 a day after a one-time $10 top-up), and the agent may use several requests per
@@ -156,8 +169,13 @@ other device choose **Custom** with `http://<your-pc-ip>:11434/v1`.
 One agent stays in charge. When you ask for a picture, a voice recording or a long program or
 document, the agent writes a detailed prompt and hands it to a specialist: one call, prompt in,
 result out. The result is saved in the workspace's `media` folder (or the path the agent chose),
-shown in the panel's chat and sent on Telegram. Choose the specialists in step 5; all are off until
-you pick one, because what you send them leaves your computer.
+shown in the panel's chat and sent on Telegram.
+
+Some specialists are chosen **automatically** from what you already connected, and step 5 shows
+which: **hearing** uses Groq Whisper once a Groq key is saved, **seeing** uses your first brain that
+sees pictures (e.g. Gemini), and **speech** uses Piper once it is installed, otherwise this computer's
+voices. Images and writing stay off until you pick a service, because what you send them leaves your
+computer. Any choice you make in step 5 wins over the automatic one.
 
 | Specialist | Services | |
 |---|---|---|
@@ -167,7 +185,7 @@ you pick one, because what you send them leaves your computer.
 | 🔊 Speech (`create_speech`) | Pollinations | free, needs the free Pollinations key |
 | | this computer's voices | free and offline (Windows speech voices, macOS `say`) |
 | | your own OpenAI-compatible server | `/v1/audio/speech` |
-| | Piper | free, natural voices **on this computer, offline**, Turkish (`tr_TR-dfki-medium`) and English; installed from the panel (about 85 MB) |
+| | Piper | free, natural voices **on this computer, offline**, in 25 languages; installed from the panel (the program and an English voice, about 85 MB; more voices about 60 MB each). With the voice on *automatic* it reads each answer with an installed voice in that answer's language |
 | ✍️ Writing / code (`ask_specialist`) | any of your brains | e.g. a coding model for long code; can save the result as a file |
 | 👂 Hearing (Telegram voice messages) | Groq Whisper | free with the Groq key; or your own server (`/v1/audio/transcriptions`) |
 | 👁 Seeing (`look_at_image`) | a model that sees pictures | e.g. `nvidia/nemotron-3.5-super-vl:free` or `google/gemma-4-31b-it:free` on OpenRouter, or Gemini |
@@ -304,9 +322,11 @@ A complete example (current weather, free API) is in [`examples/skills/weather.p
 | `pocketagent skills` | list loaded skills |
 | `pocketagent doctor` | test the brains and Telegram |
 
-In Telegram: `/dur` or `/stop` stops everything, `/kurallar` or `/rules` lists approval rules,
-`/gorevler` or `/tasks` lists scheduled tasks, `/reset` clears the conversation, `/skills` lists what
-the agent can do. Voice messages, photos and files work too.
+In Telegram (also in the bot's `/` menu): `/stop` (`/dur`) stops everything, `/brain` (`/beyin`)
+chooses the brain that answers first, `/rules` (`/kurallar`) lists approval rules, `/tasks`
+(`/gorevler`) lists scheduled tasks, `/reset` clears the conversation, `/skills` lists what the agent
+can do. Voice messages, photos and files work too. A message sent while the agent is busy is answered
+right after the current job, and the bot says so.
 
 **Start with Windows:** tick the option in the panel. It adds a shortcut to your Startup folder that
 opens the normal PocketAgent window minimized (never hidden). In locked mode the browser opens so you
@@ -341,7 +361,7 @@ can type the password.
 
 ```bash
 pip install -e ".[dev]"
-pytest                                   # 275 tests, no network, model, Telegram or OS calls
+pytest                                   # 315 tests, no network, model, Telegram or OS calls
 pyinstaller --onefile --name PocketAgent --collect-submodules pocketagent.skills --exclude-module numpy --exclude-module PIL --exclude-module cryptography --exclude-module Crypto --exclude-module yaml --exclude-module cffi --exclude-module setuptools pocketagent/__main__.py
 ```
 
@@ -349,7 +369,7 @@ The `--exclude-module` options keep optional packages that pypdf could use (and 
 on your computer) out of the executable; PDF text reading does not need them.
 
 Tests replace the model servers, Telegram, the browser and the operating system with small fakes,
-so they are fast and repeatable. Pushing a tag such as `v0.4.0` builds Windows, macOS and Linux
+so they are fast and repeatable. Pushing a tag such as `v0.5.0` builds Windows, macOS and Linux
 executables with GitHub Actions and attaches them to a release.
 
 ## Roadmap

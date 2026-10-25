@@ -73,6 +73,14 @@ TEXT = {
     },
 }
 HELP = TEXT["en"]["help"]
+MENU = {    # Telegram's "/" menu: English for everyone, Turkish for phones set to Turkish
+    "": [("brain", "Your brains: choose which answers first"), ("tasks", "Scheduled tasks"),
+         ("rules", "Saved approval rules"), ("skills", "What I can do"), ("reset", "Forget this conversation"),
+         ("stop", "Stop everything at once"), ("help", "Help")],
+    "tr": [("beyin", "Beyinlerin: önce hangisi cevap versin"), ("gorevler", "Zamanlanmış görevler"),
+           ("kurallar", "Kayıtlı onay kuralları"), ("skills", "Neler yapabilirim"), ("reset", "Bu sohbeti unut"),
+           ("dur", "Her şeyi anında durdur"), ("help", "Yardım")],
+}
 
 
 def split_message(text: str, limit: int = MESSAGE_LIMIT) -> list[str]:
@@ -434,8 +442,17 @@ class TelegramBot:
                 self.handle_callback(update["callback_query"])
         return offset
 
+    def announce_commands(self) -> None:
+        for language, commands in MENU.items():
+            extra = {"language_code": language} if language else {}
+            self.call("setMyCommands", commands=[{"command": c, "description": d} for c, d in commands], **extra)
+
     def run_forever(self, stop: threading.Event | None = None) -> None:
         offset = None
+        try:
+            self.announce_commands()
+        except requests.RequestException:     # only the menu is missing; the bot works without it
+            pass
         while not (stop and stop.is_set()):
             try:
                 offset = self.poll_once(offset)
