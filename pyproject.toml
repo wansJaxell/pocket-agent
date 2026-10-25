@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "pocketagent"
 version = "0.5.3"
-description = "A small, local-first AI agent with a local web panel, free brains with fallbacks (OpenRouter, Groq, Gemini, NVIDIA, GitHub Models, Cerebras, Ollama, LM Studio) and approval-gated computer use. Chat in the panel, the terminal or on Telegram."
+description = "A small, local-first AI agent: one mind (its memory and decision log, on your computer), many personalities (free AI models from OpenRouter, Groq, Gemini, NVIDIA, Cerebras, Ollama, LM Studio, with fallbacks), approval-gated computer use. Chat in a local panel, the terminal or on Telegram, by text or voice."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -14,6 +14,10 @@ dependencies = [
     "pypdf>=5",                               # reading PDF files (pure Python); the only other package
     "tzdata; platform_system == 'Windows'",   # time zones on Windows
 ]
+
+[project.urls]
+Homepage = "https://github.com/wansjaxell/pocket-agent"
+Issues = "https://github.com/wansjaxell/pocket-agent/issues"
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "pyinstaller>=6"]

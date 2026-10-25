@@ -3,8 +3,12 @@
 [![CI](https://github.com/wansjaxell/pocket-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/wansjaxell/pocket-agent/actions/workflows/ci.yml)
 
 **A small, local-first AI agent you can run on your own computer for free.**
-Set it up in a local web panel, plug in one or more free brains, and talk to it from the panel
+Set it up in a local web panel, plug in one or more free AI models, and talk to it from the panel
 or from Telegram on any phone. It can use your computer too, but only what you approve.
+
+**One mind, many personalities.** The models are interchangeable personalities; the memory on your
+computer is the mind. Change the model in the middle of a conversation and the agent still knows what
+you talked about and what you decided together ([how](#one-mind-many-personalities)).
 
 - **One file to start:** download `PocketAgent.exe`, double-click, and the setup panel opens in your browser
 - **Free brains, with fallbacks:** OpenRouter (sign in, no key to copy), Groq, Google AI Studio, NVIDIA,
@@ -22,25 +26,45 @@ or from Telegram on any phone. It can use your computer too, but only what you a
 - **Documents:** reads Word, Excel, PowerPoint and PDF files, writes Word and Excel files
 - **Scheduled tasks:** "every weekday at 08:00, send me the weather"
 - **A real browser:** its own Edge or Chrome window reads pages after their JavaScript ran, clicks and types
-- **Its own memory:** name, personality, notes and a decision log that stay the same whichever brain you use
+- **Its own memory:** the conversation, a decision log, notes, its name and character stay the same whichever model answers
 - **Your keys, encrypted if you want:** lock the panel with a password and the API keys are stored encrypted
 - **Computer use with approvals:** commands, the browser, screenshots, clipboard, opening programs; off
   by default, every action needs your OK, and one button stops everything
 - **English or Turkish** interface (English by default)
 - **Small:** two pure-Python packages (`requests`, and `pypdf` for PDF files), a single executable, 328 tests
 
-![Telegram chat](docs/telegram.png)
+<!-- demo video -->
+
+## One mind, many personalities
+
+The panel calls the AI models *brains*, but each one is really a **personality**: Nemotron reasons
+differently from Gemini, GPT-OSS on Groq answers differently from Qwen. What makes PocketAgent *one*
+agent is what stays the same when the model changes. It is kept on your computer and given to
+whichever model answers, with every message:
+
+| The mind (on your computer) | |
+|---|---|
+| the conversation | the recent messages of every chat, in the panel and on Telegram |
+| the decision log | what you decided together and why, append-only (`decisions.jsonl`) |
+| notes | facts you asked it to remember |
+| identity | its name and character, which you choose |
+
+So switch from NVIDIA to Groq halfway through a task, press **🔁 Try another brain**, or let the
+free-credit fallback pick the next model: the new personality reads the same conversation, knows the
+same decisions and keeps the same name, as if the mind had stayed and only the voice had changed.
+Each answer shows which model wrote it (`🧠 Groq · openai/gpt-oss-120b`). No model provider holds
+your agent's memory, so you can change providers, or run fully offline with Ollama, without starting over.
 
 ## How it works
 
 ```mermaid
 flowchart LR
     U["You<br/>(panel, Telegram, terminal)"] --> J[Job queue] --> A[Agent loop]
-    A <--> R["Brain chain<br/>1st choice → next free one on 402/403/429"]
+    A <--> R["Personalities (models)<br/>1st choice → next free one on 402/403/429"]
     A <--> S["Skills<br/>time · calculator · files · web · notes · decisions · reminders · yours"]
     A --> G{"Approval engine"} --> O["Computer<br/>shell · browser · screen · clipboard · apps"]
     A --> X["Specialists<br/>image · speech · hearing · vision · writer"]
-    A --> M[("Local memory<br/>identity · notes · decisions · history")]
+    A --> M[("The mind: local memory<br/>conversation · decisions · notes · identity")]
     G --> L[("Audit log")]
 ```
 
@@ -201,8 +225,9 @@ Local video generation (e.g. Wan 2.2 through ComfyUI) is planned as a later upda
 
 ## Memory that belongs to the agent
 
-These files belong to the agent, not to the brain. They are added to every conversation, so
-switching to another model changes how it thinks, not who it is or what it knows:
+These files belong to the agent, not to the model (see [One mind, many personalities](#one-mind-many-personalities)).
+The identity, the last 30 notes, the last 15 decisions and the recent messages of the chat go with
+every message, so switching to another model changes how it thinks, not who it is or what it knows:
 
 | File (in `memory/`) | |
 |---|---|
