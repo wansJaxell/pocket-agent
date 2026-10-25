@@ -59,6 +59,7 @@ class ToolContext:
     studio: Any = None        # media.Studio: the specialists (image, speech, writer)
     tasks: Any = None         # schedule.TaskStore
     browser: Any = None       # browser_control.BrowserControl: the agent's browser window
+    brains: Any = None        # brains.BrainChoice: list the user's brains, put one first
     files: list = field(default_factory=list)           # workspace files made for the answer
 
     def approve(self, action) -> str:

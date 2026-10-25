@@ -136,6 +136,20 @@ def _short(value, limit: int = 300):
     return value
 
 
+def tail_lines(path: Path, limit: int, block: int = 64 * 1024) -> list[str]:
+    """The last `limit` lines of a file, read from its end: the panel asks every two seconds."""
+    with open(path, "rb") as f:
+        position = f.seek(0, os.SEEK_END)
+        data = b""
+        while position > 0 and data.count(b"\n") <= limit:
+            step = min(block, position)
+            position -= step
+            f.seek(position)
+            data = f.read(step) + data
+    # the first line may be cut in the middle (even inside a character): it is past the limit then
+    return data.decode("utf-8", errors="replace").splitlines()[-limit:]
+
+
 class AuditLog:
     """Everything the agent did and every decision, one JSON object per line (audit.jsonl)."""
 
@@ -158,10 +172,8 @@ class AuditLog:
     def recent(self, limit: int = 50) -> list[dict]:
         if not self.path.exists():
             return []
-        with open(self.path, encoding="utf-8") as f:
-            lines = f.readlines()[-limit:]
         entries = []
-        for line in lines:
+        for line in tail_lines(self.path, limit):
             try:
                 entries.append(json.loads(line))
             except json.JSONDecodeError:

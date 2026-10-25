@@ -15,6 +15,7 @@ import time
 
 import requests
 
+from pocketagent.llm import brain_label
 from pocketagent.media import VOICE_NOTES, MediaError, media_kind, speakable, to_voice_note
 
 FILE_API = "https://api.telegram.org/file/bot{token}/{path}"
@@ -29,6 +30,7 @@ TEXT = {
                 "/dur or /stop  stop everything at once\n"
                 "/rules  saved approval rules\n"
                 "/tasks  scheduled tasks\n"
+                "/brain  your brains: choose which answers first\n"
                 "/reset  forget this conversation\n"
                 "/skills  what I can do\n"
                 "/help  this message",
@@ -41,6 +43,8 @@ TEXT = {
                    "{processes} process(es) ended. Computer use is now OFF: turn it on again in the panel.",
         "rules": "Saved approval rules (delete them in the panel):", "no_rules": "No saved approval rules.",
         "tasks": "Scheduled tasks (cancel one by asking me, or in the panel):", "no_tasks": "No scheduled tasks.",
+        "retry": "🔁 Try another brain", "retrying": "Asking another brain…", "queued": "⏳ Finishing the previous job; yours is next.",
+        "brains": "Your brains: tap one to make it answer first.", "no_brains": "No brains yet: add one in the panel.",
         "classes": {"money": "spending money", "delete": "deleting files", "message": "sending a message",
                     "secrets": "passwords or keys", "untrusted": "after web/file content"},
     },
@@ -49,6 +53,7 @@ TEXT = {
                 "/dur  her şeyi anında durdur\n"
                 "/kurallar  kayıtlı onay kuralları\n"
                 "/gorevler  zamanlanmış görevler\n"
+                "/beyin  beyinlerin: önce hangisi cevap versin\n"
                 "/reset  bu sohbeti unut\n"
                 "/skills  neler yapabilirim\n"
                 "/help  bu mesaj",
@@ -61,6 +66,8 @@ TEXT = {
                    "{processes} işlem sonlandırıldı. Bilgisayar kullanımı KAPALI: panelden yeniden açabilirsin.",
         "rules": "Kayıtlı onay kuralları (panelden silebilirsin):", "no_rules": "Kayıtlı onay kuralı yok.",
         "tasks": "Zamanlanmış görevler (iptal için bana söyle ya da panelden sil):", "no_tasks": "Zamanlanmış görev yok.",
+        "retry": "🔁 Başka beyinle dene", "retrying": "Başka bir beyne soruyorum…", "queued": "⏳ Önceki işi bitiriyorum, sıradaki sensin.",
+        "brains": "Beyinlerin: önce hangisi cevap versin, ona dokun.", "no_brains": "Henüz beyin yok: panelden ekle.",
         "classes": {"money": "para harcama", "delete": "dosya silme", "message": "mesaj gönderme",
                     "secrets": "şifre/anahtar", "untrusted": "web/dosya içeriğinden sonra"},
     },
@@ -153,7 +160,7 @@ def footer(answer) -> str:
 class TelegramBot:
     def __init__(self, token: str, owner_chat_id: int, agent, registry, conversations, http=requests,
                  jobs=None, approvals=None, on_stop=None, language=None, tasks=None, studio=None,
-                 voice_reply=None):
+                 voice_reply=None, brains=None):
         self.token, self.owner = token, int(owner_chat_id)
         self.agent, self.registry, self.conversations, self.http = agent, registry, conversations, http
         self.jobs = jobs            # a JobQueue: answers are worked out there, so polling never waits
@@ -162,6 +169,8 @@ class TelegramBot:
         self.tasks = tasks          # the TaskStore, for /tasks
         self.studio = studio        # media.Studio: hears voice messages, speaks answers
         self.voice_reply = voice_reply or (lambda: "off")   # "off", "spoken" or "always"
+        self.brains = brains        # brains.BrainChoice: /brain, and "try another brain"
+        self._last: dict = {}       # chat -> (question, brain that answered), for "try another brain"
         self.language = language or (lambda: "en")
         self._refused: set[int] = set()
         self._approval_messages: dict[str, int] = {}
@@ -175,11 +184,13 @@ class TelegramBot:
                                   timeout=http_timeout)
         return response.json()
 
-    def send(self, chat_id, text: str) -> None:
-        for part in split_message(text, MESSAGE_LIMIT - 500):     # room for the HTML tags
-            reply = self.call("sendMessage", chat_id=chat_id, text=to_html(part), parse_mode="HTML")
+    def send(self, chat_id, text: str, buttons=None) -> None:
+        parts = split_message(text, MESSAGE_LIMIT - 500)     # room for the HTML tags
+        for number, part in enumerate(parts, 1):
+            extra = {"reply_markup": {"inline_keyboard": buttons}} if buttons and number == len(parts) else {}
+            reply = self.call("sendMessage", chat_id=chat_id, text=to_html(part), parse_mode="HTML", **extra)
             if reply.get("ok") is False:          # Telegram could not read the markup: send it as it is
-                self.call("sendMessage", chat_id=chat_id, text=part)
+                self.call("sendMessage", chat_id=chat_id, text=part, **extra)
 
     def _keep_typing(self, chat_id, done: threading.Event) -> None:
         """Telegram's "typing..." lasts 5 s; repeat it while a slow local model thinks."""
@@ -221,9 +232,19 @@ class TelegramBot:
             self.send(chat_id, self.t("tasks") + "\n" + "\n".join(
                 f"#{t['id']} {t['next'].replace('T', ' ')[:16]} ({t['repeat'] or 'once'}): {t['task']}" for t in tasks)
                 if tasks else self.t("no_tasks"))
+        elif command in ("/brain", "/brains", "/beyin", "/model"):
+            brains = self.brains.config.brains() if self.brains else []
+            if not brains:
+                self.send(chat_id, self.t("no_brains"))
+            else:
+                rows = [[{"text": f"{number}. {brain_label(b)}" + ("" if b.enabled else " ⏸"),
+                          "callback_data": f"brain:{number - 1}"}] for number, b in enumerate(brains, 1)]
+                self.call("sendMessage", chat_id=chat_id, text=self.t("brains"), reply_markup={"inline_keyboard": rows})
         elif command in ("/rules", "/kurallar"):
             self.send(chat_id, self.rules_text())
         elif self.jobs:
+            if self.jobs.current is not None:        # say so, instead of looking frozen
+                self.send(chat_id, self.t("queued"))
             self.jobs.submit(f"telegram: {text[:40] or 'media'}", lambda: self.process(chat_id, message),
                              source="telegram")
         else:
@@ -296,18 +317,20 @@ class TelegramBot:
         except requests.RequestException:
             pass
 
-    def answer(self, chat_id, text: str, spoken: bool = False) -> None:
+    def answer(self, chat_id, text: str, spoken: bool = False, avoid=()) -> None:
         done = threading.Event()
         threading.Thread(target=self._keep_typing, args=(chat_id, done), daemon=True).start()
         files, said = [], ""
         try:
-            answer = self.agent.run(chat_id, text, source="telegram")
+            answer = self.agent.run(chat_id, text, source="telegram", **({"avoid": set(avoid)} if avoid else {}))
             reply, files, said = answer.text + footer(answer), answer.files, answer.text
+            self._last[chat_id] = (text, answer.brain)
         except Exception as error:   # brain offline, bad key, ...
             reply = f"⚠️ I could not reach my brain: {type(error).__name__}: {error}"
         finally:
             done.set()
-        self.send(chat_id, reply)
+        retry = [[{"text": self.t("retry"), "callback_data": "retry"}]] if self.brains and said else None
+        self.send(chat_id, reply, buttons=retry)
         for relative in files:
             self.send_file(chat_id, relative)
         mode = self.voice_reply()
@@ -378,7 +401,21 @@ class TelegramBot:
     def handle_callback(self, callback: dict) -> None:
         if callback.get("from", {}).get("id") != self.owner:       # only the owner's buttons count
             return
-        parts = (callback.get("data") or "").split(":")
+        data = callback.get("data") or ""
+        chat_id = (callback.get("message") or {}).get("chat", {}).get("id", self.owner)
+        if data == "retry" and chat_id in self._last:
+            question, brain = self._last.pop(chat_id)
+            self.call("answerCallbackQuery", callback_query_id=callback.get("id"), text=self.t("retrying"))
+            self.conversations.drop_last_exchange(chat_id)
+            work = lambda: self.answer(chat_id, question, avoid={brain} - {""})
+            self.jobs.submit(f"retry: {question[:40]}", work, source="telegram") if self.jobs else work()
+            return
+        if data.startswith("brain:") and self.brains:
+            label = self.brains.prefer_index(int(data.split(":")[1])) if data.split(":")[1].isdigit() else None
+            self.call("answerCallbackQuery", callback_query_id=callback.get("id"),
+                      text=f"✅ {label}" if label else self.t("stale"))
+            return
+        parts = data.split(":")
         text = self.t("stale")
         if len(parts) == 3 and parts[0] == "ap" and self.approvals:
             _, pending_id, choice = parts

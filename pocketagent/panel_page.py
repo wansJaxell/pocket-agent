@@ -73,6 +73,7 @@ border:1px solid var(--line);background:var(--card)}
 .msg.notice{align-self:center;background:none;border-style:dashed;color:var(--muted);font-size:13.5px}
 .msg .meta{margin-top:6px;font-size:12.5px;color:var(--muted);white-space:normal}
 .msg.pending{color:var(--muted);font-style:italic}
+.msg .retry{margin-top:6px;margin-left:-6px}
 form.send{position:sticky;bottom:0;display:flex;gap:8px;padding:10px 0;background:var(--bg)}
 form.send textarea{flex:1;resize:vertical;min-height:46px;max-height:40vh}
 #toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);max-width:min(92vw,620px);padding:10px 16px;
@@ -266,6 +267,7 @@ en: {
  "tg.timeout": "Nobody pressed START in time. Try again.", "tg.error": "Something went wrong. Try again.",
  "chat.placeholder": "Write a message… (Enter sends, Shift+Enter: new line)", "chat.send": "Send",
  "chat.reset": "New chat", "chat.thinking": "thinking…", "chat.nobrain": "Connect a brain in Setup first.",
+ "chat.retry": "🔁 Try another brain", "chat.retrying": "asking another brain…",
  "chip.brain": "brain", "chip.nobrain": "no brain yet", "chip.tg": "Telegram", "chip.notg": "Telegram off",
  "key.delete": "Delete key", "key.deleted": "Key deleted.", "key.delete_confirm": "Delete the saved key for {name}?",
  "provider.use": "Use this provider", "brain.on": "on", "problem.off": "off", "problem.provider_off": "provider off",
@@ -358,6 +360,7 @@ tr: {
  "tg.timeout": "Zamanında kimse START'a basmadı. Tekrar dene.", "tg.error": "Bir sorun çıktı. Tekrar dene.",
  "chat.placeholder": "Bir mesaj yaz… (Enter gönderir, Shift+Enter: yeni satır)", "chat.send": "Gönder",
  "chat.reset": "Yeni sohbet", "chat.thinking": "düşünüyor…", "chat.nobrain": "Önce Kurulum'dan bir beyin bağla.",
+ "chat.retry": "🔁 Başka beyinle dene", "chat.retrying": "başka bir beyne soruyorum…",
  "chip.brain": "beyin", "chip.nobrain": "beyin yok", "chip.tg": "Telegram", "chip.notg": "Telegram kapalı",
  "key.delete": "Anahtarı sil", "key.deleted": "Anahtar silindi.", "key.delete_confirm": "{name} için kayıtlı anahtar silinsin mi?",
  "provider.use": "Bu sağlayıcıyı kullan", "brain.on": "açık", "problem.off": "kapalı", "problem.provider_off": "sağlayıcı kapalı",
@@ -1011,9 +1014,23 @@ async function loadHistory() {
 }
 async function send(text) {
   bubble("me", text);
-  const waiting = bubble("pending", t("chat.thinking"));
+  await follow(bubble("pending", t("chat.thinking")), () => api("chat", {text}));
+}
+// "try another brain": the last answer is asked again, without the brain that wrote it
+function retryButton(answer) {
+  document.querySelectorAll("#messages .retry").forEach(b => b.remove());     // only the last answer
+  const button = h("button", {class: "btn small retry", type: "button", text: t("chat.retry")});
+  button.addEventListener("click", () => {
+    button.remove();
+    answer.className = "msg pending";
+    answer.textContent = t("chat.retrying");
+    follow(answer, () => api("chat/retry", {}));
+  });
+  answer.append(button);
+}
+async function follow(waiting, start) {
   try {
-    let job = await api("chat", {text});
+    let job = await start();
     while (job.status === "queued" || job.status === "running") {
       await new Promise(r => setTimeout(r, 700));
       job = await api("job?id=" + job.id);
@@ -1024,6 +1041,7 @@ async function send(text) {
       for (const path of job.result.files || []) await attach(waiting, path);
       const meta = metaOf(job.result);
       if (meta) waiting.append(h("div", {class: "meta", text: meta}));
+      if (S && S.brains.length > 1) retryButton(waiting);
     } else if (job.status === "cancelled") {
       waiting.classList.add("notice");
       waiting.textContent = t("chat.stopped");

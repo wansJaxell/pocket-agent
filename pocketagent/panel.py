@@ -94,6 +94,7 @@ ROUTES = {
     ("POST", "tasks/delete"): lambda r: r.app.delete_task(r.body.get("id")),
     ("POST", "chat"): lambda r: r.app.chat(r.text("text")),
     ("POST", "chat/reset"): lambda r: r.app.reset_chat(),
+    ("POST", "chat/retry"): lambda r: r.app.retry_chat(),
 }
 
 # what a browser may do before it gives the panel password (locked mode); stop always works

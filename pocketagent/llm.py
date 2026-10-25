@@ -239,6 +239,7 @@ class Router:
         self.retry_delay = retry_delay
         self.cooldowns: dict[str, float] = {}   # "openrouter-free" -> time when the daily limit resets
         self.on_problem = None                  # called with (brain, problem, error), e.g. to switch a brain off
+        self.avoid: set[str] = set()            # brain labels to leave out for one answer ("try another brain")
 
     def usable(self, brain: BrainConfig) -> str:
         """Why a brain cannot be used right now ("" if it can)."""
@@ -257,6 +258,8 @@ class Router:
 
     def candidates(self) -> list[BrainConfig]:
         chain = [b for b in self.config.chain() if not self.usable(b)]
+        if self.avoid:
+            chain = [b for b in chain if brain_label(b) not in self.avoid] or chain   # nobody else: keep them
         return chain[:1] + [b for b in chain[1:] if b.free]
 
     def status(self) -> dict:

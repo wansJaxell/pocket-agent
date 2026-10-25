@@ -77,11 +77,11 @@ class Agent:
     def __init__(self, config: Config, brain: Brain, registry: ToolRegistry, conversations: ConversationStore,
                  notes: NoteStore, reminders: ReminderStore, workspace: Path,
                  identity: IdentityStore | None = None, decisions: DecisionLog | None = None,
-                 approvals=None, audit=None, studio=None, tasks=None, browser=None):
+                 approvals=None, audit=None, studio=None, tasks=None, browser=None, brains=None):
         self.config, self.brain, self.registry = config, brain, registry
         self.conversations, self.notes, self.reminders, self.workspace = conversations, notes, reminders, workspace
         self.identity, self.decisions, self.approvals, self.audit = identity, decisions, approvals, audit
-        self.studio, self.tasks, self.browser = studio, tasks, browser
+        self.studio, self.tasks, self.browser, self.brains = studio, tasks, browser, brains
 
     def system_prompt(self) -> str:
         """Built from the agent's own files, so it stays the same whichever brain is answering."""
@@ -102,13 +102,26 @@ class Agent:
     def ask(self, chat_id, text: str, on_tool: ToolHook | None = None) -> str:
         return self.run(chat_id, text, on_tool).text
 
-    def run(self, chat_id, text: str, on_tool: ToolHook | None = None, source: str = "") -> Answer:
-        """Answer one message; also reports the tools used and which brain answered."""
+    def run(self, chat_id, text: str, on_tool: ToolHook | None = None, source: str = "", avoid=()) -> Answer:
+        """Answer one message; also reports the tools used and which brain answered.
+
+        avoid: brain labels to leave out this time (to try the same question with another brain).
+        """
+        router = self.brain if hasattr(self.brain, "avoid") else None
+        if router is not None:
+            router.avoid = set(avoid)
+        try:
+            return self._answer(chat_id, text, on_tool, source)
+        finally:
+            if router is not None:
+                router.avoid = set()
+
+    def _answer(self, chat_id, text: str, on_tool: ToolHook | None, source: str) -> Answer:
         ctx = ToolContext(workspace=self.workspace, memory=self.notes, reminders=self.reminders,
                           chat_id=str(chat_id), decisions=self.decisions, approvals=self.approvals,
                           audit=self.audit, source=source or str(chat_id), computer_use=self.config.computer_use,
                           generation=self.approvals.generation if self.approvals else None, studio=self.studio,
-                          tasks=self.tasks, browser=self.browser)
+                          tasks=self.tasks, browser=self.browser, brains=self.brains)
         messages = ([{"role": "system", "content": self.system_prompt()}]
                     + self.conversations.get(chat_id) + [{"role": "user", "content": text}])
         tools = self.registry.schemas(computer_use=ctx.computer_use)

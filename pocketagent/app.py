@@ -26,6 +26,7 @@ from pocketagent.media import MediaError, Studio
 from pocketagent.memory import ConversationStore, DecisionLog, IdentityStore, NoteStore, ReminderStore
 from pocketagent.oauth import authorize_url, exchange_code, make_verifier
 from pocketagent.schedule import TaskStore
+from pocketagent.brains import BrainChoice
 from pocketagent.browser_control import BrowserControl
 from pocketagent.setup_wizard import TELEGRAM_API, detect_local_models, wait_for_owner
 from pocketagent.tools import ToolRegistry
@@ -58,11 +59,12 @@ class Runtime:
         self.studio = Studio(config, http=http or requests)
         self.tasks = TaskStore(memory)
         self.browser = BrowserControl(cfg.home_dir() / "browser-profile", track=self.approvals.track)
+        self.brains = BrainChoice(config, lambda: cfg.save(config))
         self.agent = Agent(config, brain or Router(config, http=http), self.registry, self.conversations,
                            self.notes, self.reminders, cfg.workspace_dir(),
                            identity=self.identity, decisions=self.decisions,
                            approvals=self.approvals, audit=self.audit, studio=self.studio, tasks=self.tasks,
-                           browser=self.browser)
+                           browser=self.browser, brains=self.brains)
 
 
 def start_reminder_loop(runtime: Runtime, notify, stop: threading.Event) -> None:
@@ -100,6 +102,7 @@ class App:
         self._verifier: str | None = None                 # OpenRouter login in progress
         self._catalog: dict[str, dict[str, dict]] = {}    # provider -> model id -> what the list said
         self.piper_progress: dict = {"busy": False}       # downloading Piper (from the panel)
+        self._last_brain: dict[str, str] = {}             # chat -> the brain that wrote the last answer
         self._services = threading.Event()
         self._stop = threading.Event()
         self.sessions: set[str] = set()                   # browsers that gave the panel password
@@ -588,6 +591,7 @@ class App:
             self._bot_stop = threading.Event()
             self.bot = TelegramBot(t.token, t.owner_chat_id, r.agent, r.registry, r.conversations, jobs=self.jobs,
                                    tasks=r.tasks, studio=r.studio, voice_reply=lambda: self.config.voice_reply,
+                                   brains=r.brains,
                                    approvals=r.approvals, on_stop=self.emergency_stop,
                                    language=lambda: self.config.language)
             threading.Thread(target=self.bot.run_forever, args=(self._bot_stop,), daemon=True).start()
@@ -693,8 +697,17 @@ class App:
             raise PanelError("Write a message first.")
         return self.jobs.submit(f"panel: {text[:40]}", lambda: self._answer(chat_id, text)).as_dict()
 
-    def _answer(self, chat_id: str, text: str) -> dict:
-        answer = self.runtime.agent.run(chat_id, text, source="panel")
+    def retry_chat(self, chat_id: str = "panel") -> dict:
+        """Ask the last question again, leaving out the brain that answered it."""
+        question = self.runtime.conversations.drop_last_exchange(chat_id)
+        if not question:
+            raise PanelError("There is no answer to try again.")
+        avoid = {self._last_brain.get(chat_id, "")} - {""}
+        return self.jobs.submit(f"retry: {question[:40]}", lambda: self._answer(chat_id, question, avoid)).as_dict()
+
+    def _answer(self, chat_id: str, text: str, avoid=()) -> dict:
+        answer = self.runtime.agent.run(chat_id, text, source="panel", avoid=avoid)
+        self._last_brain[chat_id] = answer.brain
         return {"text": answer.text, "brain": answer.brain, "tools": answer.tools, "skipped": answer.skipped,
                 "files": answer.files}
 

@@ -1,3 +1,4 @@
+import json
 import threading
 
 import pytest
@@ -166,3 +167,15 @@ def test_every_decision_goes_to_the_audit_log(tmp_path):
     decisions = [e["decision"] for e in engine.audit.recent() if e["event"] == "approval"]
     assert decisions == ["approved", "rule", "blocked"]
     assert (tmp_path / "audit.jsonl").exists()
+
+
+def test_the_audit_log_is_read_from_its_end(tmp_path):
+    """The panel asks for the last entries every two seconds; the log itself grows for ever."""
+    log = AuditLog(tmp_path)
+    with open(log.path, "w", encoding="utf-8") as f:
+        for number in range(100_000):
+            f.write(json.dumps({"event": "tool", "n": number, "text": "ğüşiöç"}) + "\n")
+        f.write('{"event": "half writ')                  # a crash in the middle of a line
+    entries = log.recent(40)
+    assert [e["n"] for e in entries] == list(range(99_961, 100_000))
+    assert AuditLog(tmp_path / "none").recent() == []

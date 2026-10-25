@@ -50,6 +50,17 @@ class ConversationStore:
             data.pop(str(chat_id), None)
             self.file.write(data)
 
+    def drop_last_exchange(self, chat_id: str) -> str:
+        """Forget the last question and its answer (to ask again); returns the question, or ""."""
+        with self.file._lock:
+            data = self.file.read()
+            messages = data.get(str(chat_id), [])
+            if len(messages) < 2 or messages[-1]["role"] != "assistant" or messages[-2]["role"] != "user":
+                return ""
+            data[str(chat_id)] = messages[:-2]
+            self.file.write(data)
+            return messages[-2]["content"]
+
 
 class NoteStore:
     """Long-term facts the agent was asked to remember ("my daughter's name is ...")."""

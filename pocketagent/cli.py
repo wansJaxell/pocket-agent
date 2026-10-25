@@ -119,7 +119,7 @@ def run(config: cfg.Config, mode: str) -> None:
     if mode in ("all", "telegram") and config.telegram_ready:
         bot = TelegramBot(config.telegram.token, config.telegram.owner_chat_id, runtime.agent,
                           runtime.registry, runtime.conversations, jobs=jobs, tasks=runtime.tasks,
-                          studio=runtime.studio, voice_reply=lambda: config.voice_reply,
+                          studio=runtime.studio, voice_reply=lambda: config.voice_reply, brains=runtime.brains,
                           approvals=runtime.approvals, on_stop=emergency_stop, language=lambda: config.language)
         runtime.approvals.notifiers.append(bot.ask_approval)
         runtime.approvals.resolved.append(bot.approval_resolved)
