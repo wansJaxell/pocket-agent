@@ -53,7 +53,7 @@ def _summary(page: dict) -> str:
 
 @tool(os_access=True)
 def open_in_browser(ctx: ToolContext, url: str) -> str:
-    """Open a web page in the user's own browser (with the user's approval for that site).
+    """Show a web page to the user in their own browser (with their approval). You cannot read pages opened this way: to read a page, use browser_go.
 
     Args:
         url: full address starting with http:// or https://

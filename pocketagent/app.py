@@ -127,7 +127,7 @@ class App:
         return {
             "app": "PocketAgent", "version": __version__, "language": c.language,
             "identity": self.runtime.identity.get(),
-            "providers": [self._provider(pid) for pid in PROVIDERS],
+            "providers": [self._provider(pid) for pid, p in PROVIDERS.items() if not p.retired],
             "custom_url": c.custom_url,
             "brains": [self._brain(i, b) for i, b in enumerate(c.chain())],
             "limits": self.router.status() if self.router else {},
@@ -175,6 +175,8 @@ class App:
     def _provider_info(provider: str):
         if provider not in PROVIDERS:
             raise PanelError(f"Unknown provider '{provider}'.")
+        if PROVIDERS[provider].retired:
+            raise PanelError(f"{PROVIDERS[provider].name} was retired by its company; choose another provider.")
         return PROVIDERS[provider]
 
     def local_models(self) -> dict:

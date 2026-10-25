@@ -34,6 +34,7 @@ class Provider:
     local: bool = False           # runs on this computer
     key_check_url: str = ""       # checks the key itself, when the model list answers any key
     key_check_chat: bool = False  # no such page: a 1-token chat request checks the key instead
+    retired: bool = False         # the service was shut down: hidden in the panel, its brains are skipped
 
 
 PROVIDERS: dict[str, Provider] = {
@@ -43,15 +44,16 @@ PROVIDERS: dict[str, Provider] = {
     "groq": Provider("Groq (free tier, very fast)", "https://api.groq.com/openai/v1", True,
                      key_url="https://console.groq.com/keys", suggested_model="llama-3.3-70b-versatile", name="Groq"),
     "gemini": Provider("Google AI Studio: Gemini (free tier)", "https://generativelanguage.googleapis.com/v1beta/openai",
-                       True, key_url="https://aistudio.google.com/apikey", suggested_model="gemini-2.5-flash",
+                       True, key_url="https://aistudio.google.com/apikey", suggested_model="gemini-3.5-flash",
                        name="Gemini", trains_on_data=True),
     "nvidia": Provider("NVIDIA build.nvidia.com (free tier)", "https://integrate.api.nvidia.com/v1", True,
                        key_url="https://build.nvidia.com", suggested_model="nvidia/nemotron-3-super-120b-a12b",
                        name="NVIDIA", key_check_chat=True),
-    "github": Provider("GitHub Models (free with a GitHub account)", "https://models.github.ai/inference", True,
+    # GitHub retired GitHub Models on 30 July 2026; kept so old settings still load
+    "github": Provider("GitHub Models (retired by GitHub on 30 July 2026)", "https://models.github.ai/inference", True,
                        key_url="https://github.com/settings/personal-access-tokens/new",
                        suggested_model="openai/gpt-4.1-mini", name="GitHub Models",
-                       models_url="https://models.github.ai/catalog/models", key_check_chat=True),
+                       models_url="https://models.github.ai/catalog/models", key_check_chat=True, retired=True),
     "cerebras": Provider("Cerebras (free tier)", "https://api.cerebras.ai/v1", True,
                          key_url="https://cloud.cerebras.ai", suggested_model="gpt-oss-120b", name="Cerebras"),
     "ollama": Provider("Ollama (local, free)", "http://localhost:11434/v1", False,
@@ -202,7 +204,10 @@ class Brain:
         for attempt in range(self.retries + 1):
             last_try = attempt == self.retries
             try:
-                response = self.http.post(url, json=body, headers=headers, timeout=180)
+                # 10 s to connect, 2 minutes to answer: a hanging server must not freeze the turn
+                response = self.http.post(url, json=body, headers=headers, timeout=(10, 120))
+            except requests.Timeout as error:
+                raise BrainError(f"{self.label} did not answer within 2 minutes", status=408) from error
             except requests.ConnectionError as error:
                 if last_try:
                     raise BrainError(f"cannot connect to {self.config.base_url}. "
@@ -242,6 +247,8 @@ class Router:
         if brain.provider in self.config.disabled_providers:
             return "provider_off"
         provider = PROVIDERS.get(brain.provider)
+        if provider and provider.retired:
+            return "retired"
         if provider and provider.needs_key and brain.provider != "custom" and not brain.api_key:
             return "no_key"
         if is_openrouter_free(brain) and self.cooldowns.get("openrouter-free", 0) > time.time():
@@ -323,7 +330,8 @@ def probe(config: BrainConfig, brain_factory=Brain, known_tools: bool | None = N
     return strip_thinking(answer), native
 
 
-_NOT_CHAT = re.compile(r"embed|whisper|tts|rerank|moderation|guard|safety|dall-e|image|audio|transcrib|lyria",
+_NOT_CHAT = re.compile(r"embed|whisper|tts|rerank|moderation|guard|safety|dall-e|image|audio|transcrib|lyria|"
+                       r"orpheus|playai",
                        re.IGNORECASE)
 
 
@@ -389,7 +397,10 @@ def list_models(provider: str, api_key: str = "", base_url: str = "", http=reque
     if response.status_code >= 400:
         raise BrainError(f"{info.name or provider} answered HTTP {response.status_code}: {response.text[:200]}",
                          status=response.status_code)
-    data = response.json()
+    try:
+        data = response.json()
+    except ValueError:
+        raise BrainError(f"{info.name or provider} sent a model list PocketAgent cannot read") from None
     items = data.get("data", []) if isinstance(data, dict) else data   # the GitHub catalog is a plain list
     models = []
     for item in items if isinstance(items, list) else []:

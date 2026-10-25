@@ -45,7 +45,7 @@ def html_to_text(page: str) -> str:
 
 @tool(untrusted_output=True)
 def fetch_webpage(url: str) -> str:
-    """Download a web page and return its readable text.
+    """Download a web page and return its readable text (fast; no JavaScript). Pages that build their content with JavaScript (prices, flights, shops) come back empty or incomplete: then use browser_go.
 
     Args:
         url: full address starting with http:// or https://

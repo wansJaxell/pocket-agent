@@ -7,6 +7,7 @@ untrusted content: after it was read, the next action in the same turn needs a f
 """
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 from subprocess import Popen  # module-level name, so tests can replace it
@@ -18,16 +19,22 @@ MAX_OUTPUT = 20000
 SHELL = "PowerShell" if os.name == "nt" else "sh"
 
 
+UTF8 = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; "   # non-English output survives the pipe
+
+
 def _argv(command: str) -> list[str]:
-    if os.name == "nt":   # make PowerShell print UTF-8, so non-English output survives the pipe
-        return ["powershell", "-NoProfile", "-NonInteractive", "-Command",
-                "[Console]::OutputEncoding = [Text.Encoding]::UTF8; " + command]
+    if os.name == "nt":
+        if shutil.which("pwsh"):            # PowerShell 7 understands && and || like other shells
+            return ["pwsh", "-NoProfile", "-NonInteractive", "-Command", UTF8 + command]
+        if "&&" in command or "||" in command:     # Windows PowerShell 5.1 does not; cmd.exe does
+            return ["cmd", "/d", "/s", "/c", "chcp 65001 >nul & " + command]
+        return ["powershell", "-NoProfile", "-NonInteractive", "-Command", UTF8 + command]
     return ["/bin/sh", "-c", command]
 
 
 @tool(os_access=True, untrusted_output=True)
 def run_command(ctx: ToolContext, command: str, folder: str = "", timeout_seconds: int = 300) -> str:
-    """Run a command in the computer's shell (PowerShell on Windows, sh elsewhere). The user approves every command first.
+    """Run a command in the computer's shell (PowerShell on Windows: separate commands with ';'; sh elsewhere). The user approves every command first.
 
     Args:
         command: the exact command line to run
