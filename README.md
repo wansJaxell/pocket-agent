@@ -27,7 +27,7 @@ or from Telegram on any phone. It can use your computer too, but only what you a
 - **Computer use with approvals:** commands, the browser, screenshots, clipboard, opening programs; off
   by default, every action needs your OK, and one button stops everything
 - **English or Turkish** interface (English by default)
-- **Small:** two pure-Python packages (`requests`, and `pypdf` for PDF files), a single executable, 321 tests
+- **Small:** two pure-Python packages (`requests`, and `pypdf` for PDF files), a single executable, 327 tests
 
 ![Telegram chat](docs/telegram.png)
 
@@ -361,7 +361,7 @@ can type the password.
 
 ```bash
 pip install -e ".[dev]"
-pytest                                   # 321 tests, no network, model, Telegram or OS calls
+pytest                                   # 327 tests, no network, model, Telegram or OS calls
 pyinstaller --onefile --name PocketAgent --collect-submodules pocketagent.skills --exclude-module numpy --exclude-module PIL --exclude-module cryptography --exclude-module Crypto --exclude-module yaml --exclude-module cffi --exclude-module setuptools pocketagent/__main__.py
 ```
 
@@ -369,7 +369,7 @@ The `--exclude-module` options keep optional packages that pypdf could use (and 
 on your computer) out of the executable; PDF text reading does not need them.
 
 Tests replace the model servers, Telegram, the browser and the operating system with small fakes,
-so they are fast and repeatable. Pushing a tag such as `v0.5.0` builds Windows, macOS and Linux
+so they are fast and repeatable. Pushing a tag such as `v0.5.2` builds Windows, macOS and Linux
 executables with GitHub Actions and attaches them to a release.
 
 ## Roadmap

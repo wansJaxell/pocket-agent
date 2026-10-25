@@ -16,7 +16,7 @@ import time
 import requests
 
 from pocketagent.llm import brain_label
-from pocketagent.media import VOICE_NOTES, MediaError, media_kind, speakable, to_voice_note
+from pocketagent.media import VOICE_NOTES, MediaError, guess_language, media_kind, speakable, to_voice_note
 
 FILE_API = "https://api.telegram.org/file/bot{token}/{path}"
 MAX_DOWNLOAD = 20_000_000      # Telegram lets bots download files up to 20 MB
@@ -279,6 +279,13 @@ class TelegramBot:
         path.write_bytes(self.download(file_id))
         return f"inbox/{path.name}"
 
+    def languages(self, chat_id, message: dict) -> list[str]:
+        """The languages the owner probably speaks, likeliest first: this conversation's, their Telegram app's, the panel's."""
+        typed = [m["content"] for m in self.conversations.get(chat_id) if m["role"] == "user"][-6:]
+        found = [guess_language(text, default="") for text in reversed(typed)]
+        found += [((message.get("from") or {}).get("language_code") or "")[:2].lower(), self.language()]
+        return list(dict.fromkeys(language for language in found if language))
+
     def process(self, chat_id, message: dict) -> None:
         """Turn a message (text, voice, photo or file) into words for the agent, then answer."""
         text = (message.get("text") or message.get("caption") or "").strip()
@@ -290,7 +297,8 @@ class TelegramBot:
                     self.send(chat_id, "To understand voice messages, choose a hearing specialist in the panel "
                                        "(Specialists; Groq's free key works).")
                     return
-                transcript = self.studio.transcribe(self.download(sound["file_id"]), "voice.ogg")
+                transcript = self.studio.transcribe(self.download(sound["file_id"]), "voice.ogg",
+                                                    expect=self.languages(chat_id, message))
                 if not transcript:
                     self.send(chat_id, "I could not make out any words in that voice message.")
                     return

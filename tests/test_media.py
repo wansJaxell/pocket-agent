@@ -195,6 +195,35 @@ def test_voice_messages_are_written_down_by_groq_whisper():
     assert kwargs["data"]["model"] == "whisper-large-v3-turbo" and kwargs["headers"]["Authorization"] == "Bearer gsk_x"
 
 
+def whisper(url, kwargs):
+    """Groq Whisper that takes accented English for Korean, unless it is told the language."""
+    if kwargs["data"].get("language") == "en":
+        return response({"text": "Good. Can you describe this picture?", "language": "English"})
+    return response({"text": "좋아요. 이 사진을 설명해 드릴까요?", "language": "korean"})
+
+
+def test_a_voice_heard_in_an_unexpected_language_is_written_down_again_in_the_expected_one():
+    studio, web, config = studio_with(("POST", "audio/transcriptions", whisper), hearing={"provider": "groq", "model": ""})
+    config.keys["groq"] = "gsk_x"
+    assert studio.transcribe(b"OggS", "voice.ogg", expect=["en", "tr"]) == "Good. Can you describe this picture?"
+    assert [kwargs["data"].get("language") for _, _, kwargs in web.requests] == [None, "en"]
+    assert web.requests[0][2]["data"]["response_format"] == "verbose_json"
+
+
+@pytest.mark.parametrize("heard, expect", [
+    ({"text": "Yarın toplantı var mı?", "language": "turkish"}, ["en", "tr"]),     # an expected language
+    ({"text": "Yarın toplantı var mı?", "language": "tr"}, ["tr"]),                 # some servers answer a code
+    ({"text": "Yarın toplantı var mı?", "language": "turkish"}, []),                # nothing expected
+    ({"text": "Yarın toplantı var mı?"}, ["en"]),                                   # no language in the answer
+])
+def test_a_voice_in_an_expected_language_is_written_down_once(heard, expect):
+    studio, web, config = studio_with(("POST", "audio/transcriptions", response(heard)),
+                                      hearing={"provider": "groq", "model": ""})
+    config.keys["groq"] = "gsk_x"
+    assert studio.transcribe(b"OggS", "voice.ogg", expect=expect) == "Yarın toplantı var mı?"
+    assert len(web.requests) == 1
+
+
 def test_hearing_needs_a_service_and_its_key():
     studio, web, config = studio_with(hearing={"provider": "groq", "model": ""})
     with pytest.raises(media.MediaError, match="Groq"):

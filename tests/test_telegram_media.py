@@ -43,13 +43,14 @@ class TelegramWithFiles:
 class FakeStudio:
     def __init__(self, transcript="Yarın hava nasıl olacak?", hearing=True, extension=".mp3"):
         self.transcript, self.hearing, self.extension = transcript, hearing, extension
-        self.heard, self.spoken = [], []
+        self.heard, self.spoken, self.expected = [], [], []
 
     def ready(self, kind):
         return {"hearing": self.hearing, "speech": True}.get(kind, False)
 
-    def transcribe(self, data, filename):
+    def transcribe(self, data, filename, expect=()):
         self.heard.append((data, filename))
+        self.expected.append(list(expect))
         return self.transcript
 
     def speech(self, text, voice=""):
@@ -79,6 +80,18 @@ def test_a_voice_message_becomes_a_command_and_the_answer_can_speak(make_runtime
     assert http.texts()[0] == "🎤 <i>Yarın hava nasıl olacak?</i>"          # what was understood
     assert studio.spoken == ["Yarın güneşli, 18 °C."]                         # read without the Markdown
     assert http.uploads() == [("sendVoice", {"voice": ("answer.mp3", b"voice-bytes")})]
+
+
+def test_voice_is_heard_in_the_languages_of_the_conversation_the_phone_and_the_panel(make_runtime):
+    """Whisper once took English for Korean: it is told which languages to expect, likeliest first."""
+    studio = FakeStudio(transcript="Good. Can you describe this picture?")
+    bot, http, brain, runtime = bot_with(make_runtime, say("Sure."), studio=studio,
+                                         files={"v1": ("voice/a.oga", b"OggS")})
+    for role, text in (("user", "Can you create a picture of a world that is all ocean?"), ("assistant", "Here it is."),
+                       ("user", "Tamam"), ("assistant", "👍")):      # "Tamam": too short to tell
+        runtime.conversations.add(OWNER, role, text)
+    bot.handle({**voice(), "from": {"id": OWNER, "language_code": "tr"}})
+    assert studio.expected == [["en", "tr"]]       # the conversation, the phone; the panel (English) is there already
 
 
 def test_voice_messages_without_a_hearing_specialist_explain_the_setup(make_runtime):

@@ -108,8 +108,8 @@ _MARKS = {"tr": "ğışİı", "de": "ß", "es": "ñ¿¡", "pt": "ãõ", "pl": "�
           "sv": "å", "vi": "ạảấầẩẫậắằẳẵặẹẻẽếềểễệỉịọỏốồổỗộớờởỡợụủứừửữựỳỵỷỹđ"}
 
 
-def guess_language(text: str) -> str:
-    """The language of a text, as a two-letter code (good enough to pick a voice)."""
+def guess_language(text: str, default: str = "en") -> str:
+    """The language of a text, as a two-letter code (good enough to pick a voice); `default` if it cannot tell."""
     if re.search(r"[\u0600-\u06FF]", text):
         return "fa" if re.search(r"[پچژگ]", text) else "ar"
     if re.search(r"[\u0400-\u04FF]", text):
@@ -126,7 +126,20 @@ def guess_language(text: str) -> str:
         if any(mark in text for mark in marks):
             scores[language] += 3
     best = max(scores, key=scores.get)
-    return best if scores[best] > 0 else "en"
+    return best if scores[best] > 0 else default
+
+
+# Whisper names the language it heard ("english", or "English" on Groq); some servers give the code
+WHISPER_LANGUAGES = {"english": "en", "turkish": "tr", "german": "de", "french": "fr", "spanish": "es", "italian": "it",
+                     "portuguese": "pt", "russian": "ru", "ukrainian": "uk", "polish": "pl", "dutch": "nl", "arabic": "ar",
+                     "chinese": "zh", "hindi": "hi", "persian": "fa", "swedish": "sv", "czech": "cs", "greek": "el",
+                     "romanian": "ro", "hungarian": "hu", "vietnamese": "vi", "indonesian": "id", "korean": "ko",
+                     "japanese": "ja"}
+
+
+def heard_language(name: str) -> str:
+    name = (name or "").strip().lower()
+    return name if len(name) == 2 else WHISPER_LANGUAGES.get(name, name)
 
 
 _SEES = re.compile(r"gemini|gemma-?[34]|vision|[-_.]vl\b|[-_]vl[-_:]|llama-4|llava|pixtral|gpt-4o|gpt-4\.1|gpt-5|"
@@ -465,8 +478,12 @@ class Studio:
         return self.piper_status()
 
     # ---------- hearing and seeing ----------
-    def transcribe(self, data: bytes, filename: str) -> str:
-        """A voice message as text."""
+    def transcribe(self, data: bytes, filename: str, expect=()) -> str:
+        """A voice message as text.
+
+        expect: languages the user probably speaks, likeliest first. Whisper sometimes takes accented
+        speech for another language (English heard as Korean); then it is asked again, told the language.
+        """
         settings = self.settings("hearing")
         provider, model = settings.get("provider", ""), settings.get("model", "")
         if provider == "groq":
@@ -482,12 +499,22 @@ class Studio:
                                          "Your server")
         else:
             raise MediaError("no hearing specialist is set up")
-        try:
-            reply = self.http.post(url, headers=headers, files={"file": (filename, data)},
-                                   data={"model": model, "response_format": "json"}, timeout=180)
-        except OSError as error:
-            raise MediaError(f"cannot reach {name}: {error}") from None
-        return (self._check(reply, name).json().get("text") or "").strip()
+        # Groq says which language it heard; other servers may not offer verbose_json, so they get plain json
+        form = {"model": model, "response_format": "verbose_json" if provider == "groq" else "json"}
+
+        def hear(**language) -> dict:
+            try:
+                reply = self.http.post(url, headers=headers, files={"file": (filename, data)},
+                                       data={**form, **language}, timeout=180)
+            except OSError as error:
+                raise MediaError(f"cannot reach {name}: {error}") from None
+            return self._check(reply, name).json()
+
+        heard = hear()
+        language = heard_language(heard.get("language", ""))
+        if expect and language and language not in expect:
+            heard = hear(language=expect[0])
+        return (heard.get("text") or "").strip()
 
     def look(self, image: bytes, mime: str, question: str) -> str:
         """Ask the vision specialist about a picture."""
