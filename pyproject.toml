@@ -11,6 +11,7 @@ requires-python = ">=3.10"
 license = { text = "MIT" }
 dependencies = [
     "requests>=2.31",
+    "pypdf>=5",                               # reading PDF files (pure Python); the only other package
     "tzdata; platform_system == 'Windows'",   # time zones on Windows
 ]
 
